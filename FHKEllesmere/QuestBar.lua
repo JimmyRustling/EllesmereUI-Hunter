@@ -20,7 +20,13 @@ local function Adapter()
     local fhk = _G.ForeverHunterKeysNS
     return fhk and fhk.RXPAdapter
 end
-local function Enabled() return DB().questBar ~= false end
+-- Keys and macros on bar 8 are the owner's setup: on by default only alongside
+-- ForeverHunterKeys; everyone else turns it on themselves.
+local function Enabled()
+    local v = DB().questBar
+    if v == nil then return (_G.ForeverHunterKeysNS~=nil) end
+    return v ~= false
+end
 
 local function ConfigureBar()
     local ns = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIActionBars

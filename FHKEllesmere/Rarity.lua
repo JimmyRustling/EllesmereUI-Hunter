@@ -3,9 +3,12 @@ local EUI, NS = _G.EllesmereUI, _G.FHKEllesmereNS
 if EUI_CLIENT_BLOCKED or not EUI or not NS then return end
 local driver=CreateFrame('Frame')
 local installed
-local colours={elite='ffd79a',worldboss='ffd79a',rare='c5ccd6',rareelite='c5ccd6'}
-local gold,silver={1,215/255,154/255},{197/255,204/255,214/255}
+-- Gold / silver come from the shared colour tokens (Mob Rarity swatches change them in place).
+local C=NS.Colours or {}
+local gold,silver=C.rarityElite or {1,215/255,154/255},C.rarityRare or {197/255,204/255,214/255}
 local levelColours={elite=gold,worldboss=gold,rare=silver,rareelite=silver}
+local function Hex(c) return ('%02x%02x%02x'):format(math.floor(c[1]*255+.5),math.floor(c[2]*255+.5),math.floor(c[3]*255+.5)) end
+local colours=setmetatable({},{__index=function(_,k) local c=levelColours[k];return c and Hex(c) or nil end})
 local letters={elite='E',rare='R',rareelite='RE',worldboss='B'}
 local atlases={elite='nameplates-icon-elite-gold',worldboss='nameplates-icon-elite-gold',
     rareelite='nameplates-icon-elite-silver',rare='nameplates-icon-rareelite'}

@@ -291,6 +291,27 @@ local function Install()
     end,'General')
     -- Settings live where the task is (audit F08): class resources with Resource Bars,
     -- XP with the native XP page, press feedback with bar animations.
+    -- Colour swatches (player: every colour customisable, in its own section). Native picker
+    -- with hex input; the shared token changes in place and the companion repaints.
+    local function ColorRow(key,text,tip)
+        return {type='colorpicker',text=text,hasAlpha=false,tooltip=tip,
+            getValue=function() local c=NS.Colours and NS.Colours[key] or {1,1,1};return c[1],c[2],c[3],1 end,
+            setValue=function(r,g,b)
+                if type(r)~='number' or type(g)~='number' or type(b)~='number' then return end
+                FHKEllesmereDB.hunterColors=type(FHKEllesmereDB.hunterColors)=='table' and FHKEllesmereDB.hunterColors or {}
+                FHKEllesmereDB.hunterColors[key]={r,g,b}
+                if NS.ApplyEllesmereHunterColours then NS.ApplyEllesmereHunterColours() end
+            end}
+    end
+    local function ResetColors(keys,text)
+        return {type='button',text=text,onClick=function()
+            local saved=FHKEllesmereDB.hunterColors
+            if type(saved)=='table' then for _,k in ipairs(keys) do saved[k]=nil end end
+            if NS.ApplyEllesmereHunterColours then NS.ApplyEllesmereHunterColours() end
+            if EUI.RefreshPage then EUI:RefreshPage() end
+        end}
+    end
+    NS.EllesmereColorRow,NS.EllesmereResetColors=ColorRow,ResetColors
     Append('EllesmereUIResourceBars','FOREVER CLASS HUD',function(Row)
         if NS.AddEllesmereClassHUDOptions then NS.AddEllesmereClassHUDOptions(Row) end
         -- Class setup by goal (audit F24): each button opens the existing tool for it.
@@ -344,7 +365,7 @@ local function Install()
             {type='label',text='Changes made in combat apply when it ends'})
         Row({type='toggle',text='Guide Quest Bar (Bar 8)',
             tooltip='Keeps RestedXP targeting and the guide items on bar 8: U targets; Shift-U, I and Ctrl+Naga 12 use the active item. Keys you rebind yourself are left alone. Off restores your previous keys and RestedXP\'s own item panel.',
-            getValue=function() return DB().questBar~=false end,
+            getValue=function() local v=DB().questBar;if v==nil then return (_G.ForeverHunterKeysNS~=nil) end;return v~=false end,
             setValue=function(v) if NS.SetEllesmereQuestBarEnabled then NS.SetEllesmereQuestBarEnabled(v) end end},
             {type='label',text='/fhkquestbar lists the keys it owns'})
     end)
@@ -366,6 +387,10 @@ local function Install()
     Append('EllesmereUIUnitFrames','COLOUR AND TEXT REFINEMENTS',function(Row)
         Row(Shared(Toggle('Health Bar Colors','healthBarColors'),'Nameplates'),Toggle('Resource Bar Colors','resourceBarColors'))
         Row(Toggle('Health Text Colors','healthTextColors'),Toggle('Resource Text Colors','resourceTextColors'))
+        Row(ColorRow('healthMid','Health 50% Color','Health fill at half health (Health Bar Colors).'),
+            ColorRow('healthLow','Health 25% Color','Health fill at a quarter health.'),true)
+        Row(ColorRow('healthCritical','Health Critical Color','Health fill near empty.'),
+            ResetColors({'healthMid','healthLow','healthCritical'},'Reset Health Colors'),true)
         Row({type='toggle',text='Pet Happiness Bar Color',tooltip='Off (default): the pet bar shows health like every bar and the happiness icon shows happiness. On: the pet fill uses the happiness color instead.',
             getValue=function() return FHKEllesmereDB.petHappinessColors==true end,
             setValue=function(v) FHKEllesmereDB.petHappinessColors=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
@@ -381,6 +406,10 @@ local function Install()
             getValue=function() return FHKEllesmereDB.petMoodHideHappy==true end,
             setValue=function(v) FHKEllesmereDB.petMoodHideHappy=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
             {type='label',text='Green means nothing to do, so it can go'},true)
+        Row(ColorRow('happy','Happy Color','Pet happiness icon, strip and bar color when happy.'),
+            ColorRow('content','Content Color','Pet happiness color when content.'),true)
+        Row(ColorRow('unhappy','Unhappy Color','Pet happiness color when unhappy.'),
+            ResetColors({'happy','content','unhappy'},'Reset Happiness Colors'),true)
         if NS.EllesmerePetMoodSettings then
             local m=NS.EllesmerePetMoodSettings()
             local function Set(key,v)
@@ -553,6 +582,8 @@ local function Install()
             getValue=function() return DB().petAggroPlates==true end,
             setValue=function(v) DB().petAggroPlates=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
             {type='label',text='Shows which mobs your pet is holding'})
+        Row(ColorRow('aggroYou','On You Edge Color','Edge on an enemy attacking you.'),
+            ColorRow('aggroPet','On Pet Edge Color','Edge on an enemy attacking your pet.'))
         Row({type='toggle',text='Smooth Cue Fades',tooltip='Smooth corpse readiness and range fades on guide, rarity and raid markers. Whole-nameplate opacity uses Opacity Priority when enabled, otherwise native settings.',
             getValue=function() return DB().cueFades==true end,
             setValue=function(v) DB().cueFades=v;NS.SyncEllesmereCueFades() end},
@@ -578,6 +609,10 @@ local function Install()
                 setValue=function(v) DB().rarityIconSize=v; if NS.RefreshEllesmereRarity then NS.RefreshEllesmereRarity() end end})
         Row({type='label',text='Gold: elite / boss; silver: rare / rare elite'},
             {type='label',text='Disable colors to use native level difficulty colors'})
+        Row(ColorRow('rarityElite','Elite Level Color','Elite and boss level text and level box.'),
+            ColorRow('rarityRare','Rare Level Color','Rare and rare elite level text and level box.'))
+        Row(ColorRow('quest','Quest Count Color','The quest objective count beside the bar corner.'),
+            ResetColors({'rarityElite','rarityRare','quest'},'Reset Rarity Colors'))
         Row(Toggle('Skull-Ranked Level Icon','raritySkulls'),
             {type='label',text='Uses the game\'s skull rank, not a fixed level gap'})
         Row(Toggle('Quest Count Beside Bar Corner','rarityQuestCount'),

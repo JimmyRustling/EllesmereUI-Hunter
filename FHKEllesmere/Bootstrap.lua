@@ -3,6 +3,12 @@ local addon, namespace = ...
 _G.FHKEllesmereNS = _G.ForeverHunterKeysNS or namespace
 if EUI_CLIENT_BLOCKED then return end
 _G.FHKEllesmereNS.RefinementsVersion = '1.9.3'
+-- Personal setup (published-plugin rule): presets that change other parts of Ellesmere or
+-- WoW (action bar layout and look, chat fade, character sheet, XP bar, fonts, nameplate
+-- range fade, swing timer setup, quest-bar keys and macros) apply by themselves only
+-- alongside ForeverHunterKeys, the owner's keybind addon. Everyone else applies them from
+-- their buttons or by loading the "Forever Hunter - Default" Ellesmere profile.
+function _G.FHKEllesmereNS.EllesmerePersonalSetup() return _G.ForeverHunterKeysNS~=nil end
 _G.FHKEllesmereNS.RefinementsMediaRoot = _G.FHKEllesmereNS.RefinementsMediaRoot or
     ('Interface\\AddOns\\' .. addon .. '\\media\\')
 -- Semantic gameplay colours (audit F19). One meaning per token; modules read
@@ -58,6 +64,14 @@ _G.FHKEllesmereNS.Colours = _G.FHKEllesmereNS.Colours or {
     xpRestedAccent = {63/255,199/255,235/255},
     quest = {1, .82, 0},             -- quest objective count on nameplates
     happy = {.30, .85, .30}, content = {1, .82, 0}, unhappy = {1, .3, .25}, -- pet mood, WoW green/gold/red
+    -- Player-selectable element colours (each has a swatch in its own options section).
+    rarityElite = {1, 215/255, 154/255},  -- elite / boss level text and level box
+    rarityRare = {197/255, 204/255, 214/255}, -- rare / rare elite
+    aggroYou = {1, .82, 0},          -- nameplate edge: the mob is attacking you
+    aggroPet = {.30, .85, .30},      -- nameplate edge: the mob is attacking your pet
+    mirrorBreath = {.25, .6, 1},     -- breath bar
+    mirrorFatigue = {1, .82, 0},     -- fatigue bar
+    mirrorFeign = {.7, .62, .85},    -- Feign Death bar
 }
 -- Dark mode follows Ellesmere's own unit-frame switch (the Dark preset turns it on).
 -- In it, companion bars and rings go black and colour appears only as a thin

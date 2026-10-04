@@ -92,6 +92,7 @@ boot:RegisterEvent('PLAYER_LOGIN');boot:RegisterEvent('ADDON_LOADED')
 boot:SetScript('OnEvent',function(_,event)
     if event=='PLAYER_LOGIN' then loggedIn=true end
     if not loggedIn or not Hunter() then return end
-    if not (FHKEllesmereDB and FHKEllesmereDB.reviewedProfileApplied) then NS.ApplyEllesmereReviewedProfile()
+    if not (FHKEllesmereDB and FHKEllesmereDB.reviewedProfileApplied) then
+        if (_G.ForeverHunterKeysNS~=nil) then NS.ApplyEllesmereReviewedProfile() end
     else NS.SyncEllesmereReviewedProfile() end
 end)

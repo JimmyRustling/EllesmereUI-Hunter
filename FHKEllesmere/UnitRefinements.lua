@@ -1249,8 +1249,8 @@ end
 -- Restricted target reads draw nothing (audit P3).
 -- Opt-in (forum: "who is the enemy hitting"): an enemy on your pet gets a pet-green
 -- edge, so gold (you), green (pet) and none (someone else) read at a glance.
-local AGGRO=C.caution or {1,.82,0}
-local ON_PET=C.happy or {.30,.85,.30}
+local AGGRO=C.aggroYou or C.caution or {1,.82,0}
+local ON_PET=C.aggroPet or C.happy or {.30,.85,.30}
 local function PaintAggro(plate)
     local hp=plate.health
     if not hp then return end
@@ -1280,7 +1280,8 @@ local function PaintAggro(plate)
         r:ClearAllPoints();r:SetPoint('TOPRIGHT');r:SetPoint('BOTTOMRIGHT');r:SetWidth(w)
         edge._px=px
     end
-    if edge._colour~=colour then
+    if edge._colour~=colour or edge._r~=colour[1] or edge._g~=colour[2] or edge._b~=colour[3] then
+        edge._r,edge._g,edge._b=colour[1],colour[2],colour[3]
         for _,t in ipairs(edge.sides) do t:SetColorTexture(colour[1],colour[2],colour[3],1) end
         edge._colour=colour
     end
@@ -1490,6 +1491,10 @@ local function Paint()
             if plate[key] then FHK.PaintEllesmereHealthText(plate[key], plate.unit, 'nameplates') end
         end
     end
+end
+-- A colour swatch changed a token: cached colour curves rebuild from the new values.
+function FHK.ResetEllesmereColourCurves()
+    for _,state in pairs(barStates) do state.curve=nil end
 end
 function FHK.SyncEllesmereUnitRefinements()
     if installed then

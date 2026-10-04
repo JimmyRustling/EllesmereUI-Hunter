@@ -20,7 +20,7 @@ end
 
 local function SeedChrome()
     local db = Database()
-    if db.chromeVersion == 1 then return end
+    if db.chromeVersion == 1 or not (_G.ForeverHunterKeysNS~=nil) then return end
     local profile = EUI.GetActiveProfileData and EUI.GetActiveProfileData()
     if profile then
         db.charStyleBefore = {blizzard = profile.charSheetUseBlizzardStyle,
@@ -58,7 +58,7 @@ end
 
 local function SeedFonts()
     local db = Database()
-    if db.fontVersion == 1 then return end
+    if db.fontVersion == 1 or not (_G.ForeverHunterKeysNS~=nil) then return end
     local fonts = EUI.GetFontsDB and EUI.GetFontsDB()
     if fonts then fonts.applyToAllGameText = true end
     local path = EUI.GetFontPath and EUI.GetFontPath()

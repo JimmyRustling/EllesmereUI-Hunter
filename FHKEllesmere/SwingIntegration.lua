@@ -464,7 +464,8 @@ local function Install()
         not NS.GetCursorSwingClock then return end
     installed=ns
     FHKEllesmereDB=FHKEllesmereDB or {}
-    if not FHKEllesmereDB.nativeSwingVersion then
+    local personal=(_G.ForeverHunterKeysNS~=nil)
+    if not FHKEllesmereDB.nativeSwingVersion and personal then
         if not cfg.enabled then
             cfg.enabled=true
             cfg.width,cfg.height,cfg.rowSpacing=260,16,3
@@ -480,7 +481,7 @@ local function Install()
         cfg.rR,cfg.rG,cfg.rB,cfg.rA=.183,.615,.483,1 -- jade fill (Colours.shootFill)
         cfg.mhR,cfg.mhG,cfg.mhB,cfg.mhA=.762,.358,.991,1 -- violet fill (Colours.meleeFill)
     end
-    if (FHKEllesmereDB.nativeSwingVersion or 0)<2 then
+    if personal and (FHKEllesmereDB.nativeSwingVersion or 0)<2 then
         cfg.hideWhenIdle=true
         cfg.hunterMode='combined'
         FHKEllesmereDB.nativeSwingVersion=2

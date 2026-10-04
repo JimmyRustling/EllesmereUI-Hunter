@@ -48,7 +48,8 @@ local C=NS.Colours or {}
 -------------------------------------------------------------------------------
 -- Breath / Fatigue / Feign Death bars.
 -------------------------------------------------------------------------------
-local MIRROR={BREATH={.25,.6,1},EXHAUSTION=C.caution or {1,.82,0},FEIGNDEATH={.7,.62,.85},DEATH=C.danger or {1,.3,.25}}
+local MIRROR={BREATH=C.mirrorBreath or {.25,.6,1},EXHAUSTION=C.mirrorFatigue or C.caution or {1,.82,0},
+    FEIGNDEATH=C.mirrorFeign or {.7,.62,.85},DEATH=C.danger or {1,.3,.25}}
 local skinned={}
 function L.SkinMirror(frame)
     if not (frame and frame.StatusBar) then return end
@@ -357,6 +358,14 @@ function NS.AddEllesmereLevelingOptions(Row)
         getValue=function() return s.mirrorSkin end,setValue=function(v) Set('mirrorSkin',v) end},
         {type='toggle',text='Loot Left Behind',tooltip='When a loot window closes with items still in it (full bags or rushing), lists them in chat and warns, saying when your bags are full.',
         getValue=function() return s.lootLeft end,setValue=function(v) Set('lootLeft',v) end})
+    if NS.EllesmereColorRow then
+        local off=function() return not s.mirrorSkin end
+        local function Row2(key,text)
+            local r=NS.EllesmereColorRow(key,text);r.disabled=off;r.disabledTooltip='Skin Breath And Fatigue Bars';return r
+        end
+        Row(Row2('mirrorBreath','Breath Bar Color'),Row2('mirrorFatigue','Fatigue Bar Color'))
+        Row(Row2('mirrorFeign','Feign Death Bar Color'),NS.EllesmereResetColors({'mirrorBreath','mirrorFatigue','mirrorFeign'},'Reset Bar Colors'))
+    end
     Row({type='dropdown',text='Loot Left Behind From',values={['0']='Poor',['1']='Common',['2']='Uncommon',['3']='Rare',['4']='Epic'},order={'0','1','2','3','4'},
         disabled=function() return not s.lootLeft end,disabledTooltip='Loot Left Behind',
         getValue=function() return tostring(s.lootQuality) end,setValue=function(v) Set('lootQuality',tonumber(v) or 2) end},

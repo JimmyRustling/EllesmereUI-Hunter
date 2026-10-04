@@ -757,7 +757,8 @@ local function ChatSettings()
     local chat = ns and ns.ECHAT
     if not chat or not chat.DB then return end
     local cfg = chat.DB()
-    if not db.chatConfigured then
+    local personal = (_G.ForeverHunterKeysNS~=nil)
+    if not db.chatConfigured and personal then
         db.chatBefore = {enabled = cfg.idleFadeEnabled, delay = cfg.idleFadeDelay, strength = cfg.idleFadeStrength}
         cfg.idleFadeEnabled, cfg.idleFadeDelay, cfg.idleFadeStrength = true, CHAT_FADE_DELAY, 100
         db.chatConfigured = true
@@ -774,7 +775,7 @@ local function ChatSettings()
     end
     -- The player wants chat out of the way in combat: switched on once; the
     -- Hide Chat In Combat toggle turns it off again for good.
-    if not rawget(db, 'chatCombatHideApplied') and FHK.SetEllesmereChatHiddenInCombat then
+    if personal and not rawget(db, 'chatCombatHideApplied') and FHK.SetEllesmereChatHiddenInCombat then
         if FHK.SetEllesmereChatHiddenInCombat(true) then rawset(db, 'chatCombatHideApplied', true) end
     end
     if FHK.ApplyEllesmereChatQuiet then FHK.ApplyEllesmereChatQuiet() end
@@ -786,7 +787,11 @@ end
 -- fade; the previous fade settings are kept on the chat profile and restored.
 local CHAT_QUIET_DELAY = 2
 local chatWakeHooked
-function FHK.EllesmereChatQuiet() return db and db.chatQuiet ~= false end
+function FHK.EllesmereChatQuiet()
+    if not db then return false end
+    if db.chatQuiet == nil then return (_G.ForeverHunterKeysNS~=nil) end
+    return db.chatQuiet ~= false
+end
 function FHK.ApplyEllesmereChatQuiet()
     local ns = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIChat
     local chat = ns and ns.ECHAT
@@ -989,7 +994,7 @@ end
 
 -- Apply the player's request once; later native opacity choices remain theirs.
 function FHK.EnableEllesmereRequestedRangeFade()
-    if not db or rawget(db,'rangeOpacityRequested') then return end
+    if not db or rawget(db,'rangeOpacityRequested') or not (_G.ForeverHunterKeysNS~=nil) then return end
     local np=_G.EllesmereNameplates_NS
     local p=np and np.db and np.db.profile
     if not p or not np.RangeText_Apply then return end
@@ -1172,7 +1177,9 @@ end
 -- Hunter colours (plan section 5, player: selectable colours). The identity tokens change
 -- in place, so every cached reference follows; a token's bar fill follows its colour (the
 -- palette's fills sit at 73 % of the bright value). Unset keys keep the shipped palette.
-local HUNTER_COLOURS={shoot='shootFill',melee='meleeFill',cast='castFill',retry='retryFill',danger=false,caution=false}
+local HUNTER_COLOURS={shoot='shootFill',melee='meleeFill',cast='castFill',retry='retryFill',danger=false,caution=false,
+    alert=false,happy=false,content=false,unhappy=false,healthMid=false,healthLow=false,healthCritical=false,quest=false,
+    rarityElite=false,rarityRare=false,aggroYou=false,aggroPet=false,mirrorBreath=false,mirrorFatigue=false,mirrorFeign=false}
 local shipped
 local function ApplyHunterColours(restyle)
     local C=FHK.Colours
@@ -1199,6 +1206,9 @@ local function ApplyHunterColours(restyle)
     end
     RefreshPalette()
     if restyle then
+        for _,name in ipairs({'ResetEllesmereColourCurves','SyncEllesmereUnitRefinements','RefreshEllesmereRarity','SyncEllesmereLeveling','LayoutEllesmereWarnings'}) do
+            if type(FHK[name])=='function' then pcall(FHK[name]) end
+        end
         if hunter then StyleSwings() end
         if FHK.ApplySwingCursor then pcall(FHK.ApplySwingCursor) end
         if FHK.ApplyEllesmereIndicators then pcall(FHK.ApplyEllesmereIndicators) end
@@ -1337,7 +1347,9 @@ SlashCmdList.FHKELLESMERE = function(input)
             local cfg = chat.DB()
             -- An explicit fade choice replaces quiet chat.
             db.chatQuiet = false; cfg.fhkQuietBefore = nil
-            if value == 'restore' and db.chatBefore then
+            if value == 'restore' then
+                -- Nothing saved means nothing was changed: leave the native settings alone.
+                if not db.chatBefore then print('FHK Ellesmere: no earlier chat fade to restore.'); return end
                 cfg.idleFadeEnabled, cfg.idleFadeDelay, cfg.idleFadeStrength =
                     db.chatBefore.enabled, db.chatBefore.delay, db.chatBefore.strength
             else

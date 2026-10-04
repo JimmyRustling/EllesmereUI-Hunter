@@ -749,6 +749,11 @@ function NS.AddEllesmereWarningOptions(Row)
         getValue=function() return s.critical end,setValue=function(v) s.critical=v;NS.SyncEllesmereWarnings() end},
         {type='slider',text='Combat Warning Height',min=60,max=300,step=10,
         getValue=function() return s.criticalY end,setValue=function(v) s.criticalY=v;Layout() end})
+    if NS.EllesmereColorRow then
+        Row(NS.EllesmereColorRow('alert','Act-Now Warning Color','Red warnings: out of ammo, dead pet, Stop Attack, Feign Death.'),
+            NS.EllesmereColorRow('caution','Caution Warning Color','Amber warnings: low ammo, feed pet, low pet food. Also the dead-zone approach color.'))
+        Row(NS.EllesmereResetColors({'alert','caution'},'Reset Warning Colors'),{type='label',text='Shown the next time a warning appears'})
+    end
     Row({type='button',text='Preview Warnings',onClick=function() NS.PreviewEllesmereWarnings() end},
         {type='label',text='Top of the screen, under the game error line'})
 end

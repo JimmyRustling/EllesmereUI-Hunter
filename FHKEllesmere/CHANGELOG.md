@@ -5,6 +5,20 @@ E1 = static checks, E2 = mocked integration, E3 = seen working in game. Only E3 
 
 ## [Unreleased]: 1.9.3 (pet food row, Hunter cues, priority 2/3, leveling helpers; new TOC files: full restart)
 
+### Publish audit: personal presets gated to the owner install; every colour customisable in its own section (Claude, 2026-10-04)
+- **Why:** player: ship the features, not our layout, macros or keybinds; every colour, shape or icon needs a toggle and its colour, in the right Ellesmere section. Full record: [PUBLISH_AUDIT_2026-10-04.md](PUBLISH_AUDIT_2026-10-04.md).
+- **Result:**
+  - **Presets gated:** Quest Bar keys and macros, idle chrome, reviewed profile, chrome and fonts, chat fade, combat hide and quiet chat, nameplate range fade, and swing timer setup now apply by themselves only with ForeverHunterKeys (the owner). Everyone else uses the buttons.
+  - **New swatches in their own sections:**
+    - Unit Frames: pet Happy / Content / Unhappy; Health 50 % / 25 % / Critical;
+    - Nameplates: On You / On Pet edge; Elite / Rare level; Quest Count;
+    - Hunter Warnings: Act-Now / Caution;
+    - Leveling Helpers: Breath / Fatigue / Feign Death bars.
+
+    Each section has its own Reset. They are shared tokens changed in place, health colour curves rebuild, and the pet XP badge and Passive letter use Caution and Danger.
+  - **Fix:** `/fhkeui chat restore` with nothing saved no longer sets a fade.
+- **E1/E2:** Validate 51 files; integration 2893 + element suites. Preset tests cover both the published and the owner install. The Mob Rarity page height is +64 on purpose. **No E3.**
+
 ### Forum list: mana reveal, quest/elite badge, NPC bag closing, Cooldown key labels (Claude, 2026-10-04)
 - **Why:** player: "carry on with the forum list"; the quick, levelling-useful items from plan section 11.
 - **Result:**

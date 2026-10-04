@@ -265,7 +265,7 @@ end
 local function Initial()
     if addon=='FHKEllesmere' and FHKEllesmereDB then
         -- Apply this player's idle-visibility request once; later choices persist.
-        if not rawget(FHKEllesmereDB,'chromeIdleRequested') then
+        if not rawget(FHKEllesmereDB,'chromeIdleRequested') and (_G.ForeverHunterKeysNS~=nil) then
             if FHKEllesmereDB.chromeVisibility==nil then FHKEllesmereDB.chromeVisibility='mouseover' end
             rawset(FHKEllesmereDB,'chromeIdleRequested',true)
         end

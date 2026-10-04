@@ -217,7 +217,7 @@ function P.PaintXP()
         free=total-used
         training='Training: '..free..' available ('..used..' used / '..total..' total)'
     end
-    if xp.badge then xp.badge:SetText(free and free>0 and ('TP '..free) or '');if xp.badge.SetTextColor then xp.badge:SetTextColor(1,.82,0) end end
+    if xp.badge then xp.badge:SetText(free and free>0 and ('TP '..free) or '');if xp.badge.SetTextColor then local c=NS.Colours and NS.Colours.caution or {1,.82,0};xp.badge:SetTextColor(c[1],c[2],c[3]) end end
     -- Pet bar: stance (Assist / Defensive / Passive) and abilities with their autocast state.
     local stance,abilities=nil,{}
     for i=1,(_G.NUM_PET_ACTION_SLOTS or 10) do
@@ -237,7 +237,7 @@ function P.PaintXP()
     if xp.stance then
         xp.stance:SetText(st and st[1] or '')
         if xp.stance.SetTextColor then
-            if stance=='PET_MODE_PASSIVE' then xp.stance:SetTextColor(1,.3,.25) else xp.stance:SetTextColor(.96,.945,.925) end
+            if stance=='PET_MODE_PASSIVE' then local c=NS.Colours and NS.Colours.danger or {1,.3,.25};xp.stance:SetTextColor(c[1],c[2],c[3]) else xp.stance:SetTextColor(.96,.945,.925) end
         end
     end
     xp.tooltip=label..'\nLoyalty: '..(Str(loyalty) and loyalty or '?')..'\n'..training..
