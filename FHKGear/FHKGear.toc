@@ -1,0 +1,28 @@
+## Interface: 16001
+## Title: FHK Gear
+## Notes: Upgrade scores, quest reward choice and auto-equip for levelling, as a Gear tab in EllesmereUI. Adapted from AutoGear (CC BY-NC-SA 4.0).
+## Author: FHK (adapted from AutoGear by Synthetikaryote and BujuArena)
+## Version: 0.5.1
+## Dependencies: EllesmereUI
+## OptionalDeps: ForeverGear, AutoGear
+## SavedVariables: FHKGearDB
+## SavedVariablesPerCharacter: FHKGearCharDB
+## X-License: CC BY-NC-SA 4.0
+
+Safety.lua
+Data\Weights.lua
+Data\Procs.lua
+Data\Hunter.lua
+Weights.lua
+Effects.lua
+Items.lua
+Context.lua
+Engine.lua
+Equipment.lua
+HunterModel.lua
+Core.lua
+Actions.lua
+Profiles.lua
+Markers.lua
+Notify.lua
+Options.lua
