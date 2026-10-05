@@ -144,21 +144,32 @@ NS.EllesmereRaptorQueued=RaptorQueued
 -- delays that shot. Advisory, from the shared ranged clock; hidden when the shot falls
 -- outside the cast or the clock is unknown.
 local CLIPPERS={[19434]=true,[2643]=true}
-local clipTick
+local clipTick,clipHost
+local function ClippingCast(id,name)
+    if Plain(id) and CLIPPERS[id] then return true end
+    if not (C_Spell and type(C_Spell.GetSpellName)=='function' and type(name)=='string' and not (issecretvalue and issecretvalue(name))) then return false end
+    for base in pairs(CLIPPERS) do
+        local ok,spell=pcall(C_Spell.GetSpellName,base)
+        if ok and not (issecretvalue and issecretvalue(spell)) and spell==name then return true end
+    end
+    return false
+end
 function NS.PaintEllesmereClipMarker()
     local _,cfg=Config()
     local bar=_G.ERB_CastBar
     local show=false
-    if cfg and cfg.fhkClipMarker and bar and bar.CreateTexture and UnitCastingInfo then
-        local ok,_,_,_,startMS,endMS,_,_,_,spellID=pcall(UnitCastingInfo,'player')
+    if cfg and cfg.enabled and cfg.fhkClipMarker and bar and bar.CreateTexture and UnitCastingInfo then
+        local ok,name,_,_,startMS,endMS,_,_,_,spellID=pcall(UnitCastingInfo,'player')
         local finish
         if NS.GetCursorSwingClock then local _;_,_,finish=NS.GetCursorSwingClock('ranged') end
-        if ok and Plain(startMS) and Plain(endMS) and Plain(spellID) and CLIPPERS[spellID] and Plain(finish) and endMS>startMS then
+        if ok and Plain(startMS) and Plain(endMS) and ClippingCast(spellID,name) and Plain(finish) and endMS>startMS then
             local frac=(finish-startMS/1000)/((endMS-startMS)/1000)
             local width=bar.GetWidth and bar:GetWidth()
             if frac>0 and frac<1 and Plain(width) and width>0 then
-                if not clipTick then
+                if clipHost~=bar then
+                    if clipTick then clipTick:Hide() end
                     clipTick=bar:CreateTexture(nil,'OVERLAY',nil,7);clipTick:SetColorTexture(1,1,1,1)
+                    clipHost=bar
                 end
                 clipTick:ClearAllPoints()
                 clipTick:SetPoint('TOP',bar,'TOPLEFT',width*frac,0);clipTick:SetPoint('BOTTOM',bar,'BOTTOMLEFT',width*frac,0)
@@ -170,6 +181,12 @@ function NS.PaintEllesmereClipMarker()
         end
     end
     if not show and clipTick then clipTick:Hide() end
+end
+NS.RefreshEllesmereSwingColours=function()
+    sparkStamp=sparkStamp+1
+    local ns=Config()
+    if ns and ns.ST_Apply then ns.ST_Apply() end
+    NS.PaintEllesmereClipMarker()
 end
 local children,childCount,childShell={}
 local function RefineRows()
@@ -496,6 +513,7 @@ local function Install()
     hooksecurefunc(ns,'ST_Apply',function()
         for _,state in pairs(rows) do state.color,state.sparkHeight,state.zoneSize=nil,nil,nil end
         RefineRows()
+        NS.PaintEllesmereClipMarker()
     end)
     -- Preserve native layout bounds while smoothing visibility on this shell.
     -- The native helper continues to own every other element.
@@ -523,6 +541,7 @@ local function QueueSync(world)
         end
         resetWorld=nil
         RefineRows()
+        NS.PaintEllesmereClipMarker()
     end)
 end
 driver:RegisterEvent('ADDON_LOADED'); driver:RegisterEvent('PLAYER_LOGIN')
@@ -531,11 +550,19 @@ for _,event in ipairs({'STOP_AUTOREPEAT_SPELL','START_AUTOREPEAT_SPELL','PLAYER_
 -- Raptor Strike queue state changes (one coalesced row pass per frame at most).
 driver:RegisterEvent('ACTIONBAR_UPDATE_STATE')
 -- Player casts only: any nearby unit's cast used to queue a full row sync.
-for _,event in ipairs({'UNIT_SPELLCAST_START','UNIT_SPELLCAST_FAILED_QUIET','UNIT_SPELLCAST_SUCCEEDED','UNIT_SPELLCAST_INTERRUPTED'}) do
+for _,event in ipairs({'UNIT_SPELLCAST_START','UNIT_SPELLCAST_DELAYED','UNIT_SPELLCAST_STOP','UNIT_SPELLCAST_FAILED','UNIT_SPELLCAST_FAILED_QUIET','UNIT_SPELLCAST_SUCCEEDED','UNIT_SPELLCAST_INTERRUPTED'}) do
     if driver.RegisterUnitEvent then driver:RegisterUnitEvent(event,'player') else driver:RegisterEvent(event) end
 end
+local raptorState
 driver:SetScript('OnEvent',function(_,event)
-    if event=='UNIT_SPELLCAST_START' or event=='UNIT_SPELLCAST_INTERRUPTED' or event=='UNIT_SPELLCAST_SUCCEEDED' or event=='UNIT_SPELLCAST_FAILED_QUIET' then
+    if event=='ACTIONBAR_UPDATE_STATE' then
+        local _,cfg=Config()
+        if not cfg or not cfg.enabled then return end
+        local state=RaptorQueued(cfg)
+        if state==raptorState then return end
+        raptorState=state
+    end
+    if event:find('^UNIT_SPELLCAST_') or event=='PLAYER_SWING' then
         NS.PaintEllesmereClipMarker()
     end
     if not installed then Install() end

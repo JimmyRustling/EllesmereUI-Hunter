@@ -1206,7 +1206,8 @@ local function ApplyHunterColours(restyle)
     end
     RefreshPalette()
     if restyle then
-        for _,name in ipairs({'ResetEllesmereColourCurves','SyncEllesmereUnitRefinements','RefreshEllesmereRarity','SyncEllesmereLeveling','LayoutEllesmereWarnings'}) do
+        for _,name in ipairs({'ResetEllesmereColourCurves','SyncEllesmereUnitRefinements','RefreshEllesmereRarity','SyncEllesmereLeveling',
+            'RepaintEllesmereWarnings','SyncEllesmerePetElements','SyncEllesmereHunterCues','RefreshEllesmereSwingColours','LayoutEllesmereWarnings'}) do
             if type(FHK[name])=='function' then pcall(FHK[name]) end
         end
         if hunter then StyleSwings() end

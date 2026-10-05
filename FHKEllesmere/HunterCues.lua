@@ -37,13 +37,27 @@ function NS.EllesmereHunterCueSettings()
     return s
 end
 local function Plain(v) return not (issecretvalue and issecretvalue(v)) end
+local function Public(v) if Plain(v) then return v end end
 local function Read(fn,...)
     if type(fn)~='function' then return end
     local ok,a,b,c,d,e,f,g,h,i=pcall(fn,...)
-    if ok and Plain(a) then return a,b,c,d,e,f,g,h,i end
+    if ok then return Public(a),Public(b),Public(c),Public(d),Public(e),Public(f),Public(g),Public(h),Public(i) end
+end
+local function Aura(unit,name,filter)
+    local get=C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName
+    if not name or type(get)~='function' then return nil,false end
+    local ok,value=pcall(get,unit,name,filter)
+    if not ok or not Plain(value) then return nil,false end
+    return value,value==nil or type(value)=='table'
 end
 local function Num(v) return Plain(v) and type(v)=='number' and v==v end
-local function InCombat() return Read(_G.InCombatLockdown)~=false end
+-- PLAYER_REGEN_DISABLED fires before InCombatLockdown turns true, so the events set this flag
+-- (otherwise the Pet Idle ticker never started on entering combat).
+local combatFlag=nil
+local function InCombat()
+    if combatFlag~=nil then return combatFlag end
+    return Read(_G.InCombatLockdown)~=false
+end
 local function Hunter() return select(2,Read(_G.UnitClass,'player'))=='HUNTER' end
 local function SpellName(id)
     local name=C_Spell and Read(C_Spell.GetSpellName,id)
@@ -93,7 +107,9 @@ function H.CheckFeign(now)
     if not feigning then
         feignAt=nil
         if feignTicker then feignTicker:Cancel();feignTicker=nil end
-        Hide('feign');return
+        Hide('feign')
+        if not s.feign then resistToken=resistToken+1;Hide('feignResist') end
+        return
     end
     if not feignTicker and C_Timer and C_Timer.NewTicker then feignTicker=C_Timer.NewTicker(1,function() H.CheckFeign() end) end
     local elapsed=now-feignAt
@@ -110,7 +126,7 @@ function H.FeignCast()
     local token=resistToken
     -- Feign Death applies at once; a moment later a resisted cast is still not feigning.
     C_Timer.After(.3,function()
-        if token~=resistToken then return end
+        if token~=resistToken or not NS.EllesmereHunterCueSettings().feign or not Hunter() then return end
         if Feigning()==false and Read(_G.UnitIsDeadOrGhost,'player')==false then
             Show('feignResist','Feign Death Resisted',RED,true)
             C_Timer.After(2.5,function() if token==resistToken then Hide('feignResist') end end)
@@ -127,14 +143,15 @@ function H.GrowlAutocast()
     for i=1,(_G.NUM_PET_ACTION_SLOTS or 10) do
         local slotName,_,_,_,allowed,enabled,spellID=Read(_G.GetPetActionInfo,i)
         local isGrowl=Num(spellID) and SpellName(spellID)==name or slotName==name
-        if name and isGrowl and allowed then return enabled==true end
+        if name and isGrowl and allowed==true and type(enabled)=='boolean' then return enabled end
     end
 end
 function H.CheckGrowl()
     local s=NS.EllesmereHunterCueSettings()
     if not s.growl or InCombat() or Read(_G.UnitExists,'pet')~=true or Read(_G.UnitIsDeadOrGhost,'pet')~=false then Hide('growl');return end
     local on=H.GrowlAutocast()
-    local grouped=Read(_G.IsInGroup)==true
+    local grouped=Read(_G.IsInGroup)
+    if type(grouped)~='boolean' then Hide('growl');return end
     if on==true and grouped then Show('growl','Growl Is On - Turn It Off In A Group',AMBER)
     elseif on==false and not grouped and s.growlSolo then Show('growl','Growl Is Off - Turn It On Solo',AMBER)
     else Hide('growl') end
@@ -148,10 +165,16 @@ local TRACK={[1]=1494,[2]=19879,[3]=19878,[4]=19880,[5]=19882,[6]=19884,[7]=1988
 function H.ActiveTracking()
     local M=C_Minimap
     local n=M and Read(M.GetNumTrackingTypes)
-    for i=1,Num(n) and n or 0 do
+    if not Num(n) then return nil,nil,false end
+    for i=1,n do
         local info=Read(M.GetTrackingInfo,i)
-        if type(info)=='table' and info.type=='spell' and info.active==true then return info.spellID,info.texture end
+        if type(info)~='table' or not Plain(info.type) or not Plain(info.active) then return nil,nil,false end
+        if info.type=='spell' and info.active==true then
+            if not Num(info.spellID) then return nil,nil,false end
+            return info.spellID,Public(info.texture),true
+        end
     end
+    return nil,nil,true
 end
 function H.CheckTracking()
     local s=NS.EllesmereHunterCueSettings()
@@ -161,8 +184,8 @@ function H.CheckTracking()
     local _,typeID=Read(_G.UnitCreatureType,'target')
     local want=Num(typeID) and TRACK[typeID]
     if not want or not Known(want) then Hide('tracking');return end
-    local active=H.ActiveTracking()
-    if active==want then Hide('tracking');return end
+    local active,_,readable=H.ActiveTracking()
+    if not readable or active==want then Hide('tracking');return end
     local icon=C_Spell and Read(C_Spell.GetSpellTexture,want)
     local name=SpellName(want) or 'Track'
     Show('tracking',(icon and ('|T'..icon..':0|t ') or '')..name..' (+5%)',AMBER)
@@ -249,7 +272,7 @@ local function StartGlow(btn)
     if not G then return end
     local wrapper=glowing[btn]
     if not wrapper then
-        wrapper=CreateFrame('Frame',nil,btn:GetParent() or btn);wrapper:SetAllPoints(btn);wrapper:EnableMouse(false)
+        wrapper=CreateFrame('Frame',nil,btn);wrapper:SetAllPoints(btn);wrapper:EnableMouse(false)
         glowing[btn]=wrapper
     end
     wrapper:SetFrameLevel((btn:GetFrameLevel() or 1)+10)
@@ -288,7 +311,7 @@ function H.CheckReactive()
     local s=NS.EllesmereHunterCueSettings()
     local usable=C_Spell and C_Spell.IsSpellUsable
     local live={}
-    if s.reactive then
+    if s.reactive and Hunter() then
         for _,id in ipairs(REACTIVE) do
             local name=SpellName(id)
             if name and Known(id) and Read(usable,name)==true then live[name]=true end
@@ -314,20 +337,25 @@ H.CombatTick=CombatTick
 -- Trap Broken: Freezing Trap left the target well before its expiry.
 -------------------------------------------------------------------------------
 local trap={guid=nil,expires=nil}
+local trapToken=0
 function H.CheckTrap(now)
     local s=NS.EllesmereHunterCueSettings()
-    if not s.trapBroken then trap.guid=nil;return end
+    if not s.trapBroken then trap.guid,trap.expires=nil,nil;trapToken=trapToken+1;Hide('trapBroken');return end
     now=now or (GetTime and GetTime() or 0)
     local guid=Read(_G.UnitGUID,'target')
     local name=SpellName(3355)
-    local aura=name and Read(C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName,'target',name,'HARMFUL|PLAYER')
+    local aura,readable=Aura('target',name,'HARMFUL|PLAYER')
+    if not readable then trap.guid,trap.expires=nil,nil;return end
     if type(aura)=='table' then
         trap.guid=guid;trap.expires=Num(aura.expirationTime) and aura.expirationTime>0 and aura.expirationTime or nil
         return
     end
-    if trap.guid and trap.guid==guid and trap.expires and now<trap.expires-.5 then
+    -- A dead target lost the trap by dying, not by being broken.
+    if trap.guid and trap.guid==guid and trap.expires and now<trap.expires-.5 and Read(_G.UnitIsDead,'target')==false then
         Show('trapBroken','Trap Broken',AMBER,true)
-        C_Timer.After(2.5,function() Hide('trapBroken') end)
+        trapToken=trapToken+1
+        local token=trapToken
+        C_Timer.After(2.5,function() if token==trapToken then Hide('trapBroken') end end)
     end
     trap.guid,trap.expires=nil,nil
 end
@@ -340,16 +368,16 @@ function H.CheckMark()
     local s=NS.EllesmereHunterCueSettings()
     if not s.huntersMark or not HostileTarget() or not Known(1130) then Hide('huntersMark');return end
     local class=Read(_G.UnitClassification,'target')
-    if not BIG[class] then Hide('huntersMark');return end
+    if not class or not BIG[class] then Hide('huntersMark');return end
     local name=SpellName(1130)
-    local mark=name and Read(C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName,'target',name,'HARMFUL|PLAYER')
-    if mark==nil and name then Show('huntersMark',name,AMBER) else Hide('huntersMark') end
+    local mark,readable=Aura('target',name,'HARMFUL|PLAYER')
+    if readable and mark==nil then Show('huntersMark',name,AMBER) else Hide('huntersMark') end
 end
 local function PlayerAura(id)
     local name=SpellName(id)
     if not name then return nil end
-    local aura=Read(C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName,'player',name,'HELPFUL')
-    if aura=='SECRET' then return nil end
+    local aura,readable=Aura('player',name,'HELPFUL')
+    if not readable then return nil end
     return type(aura)=='table'
 end
 function H.CheckBuffs()
@@ -379,6 +407,8 @@ function H.OnEvent(_,event,unit,_,spellID)
         if unit=='player' and Num(spellID) and spellID==FEIGN_DEATH then H.FeignCast() end
         return
     end
+    if event=='PLAYER_REGEN_DISABLED' then combatFlag=true elseif event=='PLAYER_REGEN_ENABLED' then combatFlag=false end
+    if event=='UNIT_FLAGS' then H.CheckFeign();return end
     if event=='START_AUTOREPEAT_SPELL' then shooting=true elseif event=='STOP_AUTOREPEAT_SPELL' then shooting=false
     elseif event=='PLAYER_ENTER_COMBAT' then meleeing=true elseif event=='PLAYER_LEAVE_COMBAT' then meleeing=false end
     if event=='UNIT_AURA' then
@@ -392,12 +422,19 @@ end
 function NS.SyncEllesmereHunterCues()
     local s=NS.EllesmereHunterCueSettings()
     if driver then driver:UnregisterAllEvents() end
-    if not Hunter() then return end
-    if s.beastTooltip then HookTooltip() end
-    local any=s.ccBreak or s.feign or s.growl or s.tracking or s.petIdle or s.trapBroken or s.reactive or s.huntersMark or s.trueshot or s.rapidKilling
+    local hunter=Hunter()
+    for btn,wrapper in pairs(glowing) do if wrapper:IsShown() then StopGlow(btn) end end
+    combatFlag=nil
+    shooting=Read(C_Spell and C_Spell.IsCurrentSpell,75)==true
+    meleeing=Read(C_Spell and C_Spell.IsCurrentSpell,6603)==true
+    if hunter and s.beastTooltip then HookTooltip() end
+    local any=hunter and (s.ccBreak or s.feign or s.growl or s.tracking or s.petIdle or s.trapBroken or s.reactive or s.huntersMark or s.trueshot or s.rapidKilling)
     if not any then
         for _,key in ipairs({'ccBreak','feign','feignResist','growl','tracking','petIdle','trapBroken','huntersMark','trueshot','rapidKilling'}) do Hide(key) end
-        CombatTick(false);H.CheckReactive();return
+        CombatTick(false);idleSince=nil;trap.guid,trap.expires=nil,nil;trapToken=trapToken+1
+        resistToken=resistToken+1;feignAt=nil
+        if feignTicker then feignTicker:Cancel();feignTicker=nil end
+        H.CheckReactive();return
     end
     if not driver then driver=CreateFrame('Frame');driver:SetScript('OnEvent',H.OnEvent) end
     local function Unit(event,...) if driver.RegisterUnitEvent then driver:RegisterUnitEvent(event,...) else driver:RegisterEvent(event) end end

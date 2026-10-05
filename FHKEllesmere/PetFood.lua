@@ -71,8 +71,12 @@ end
 -------------------------------------------------------------------------------
 -- Bag scan, cached until the bags or the pet change.
 -------------------------------------------------------------------------------
+-- The bag list is rebuilt after bag changes; what the pet eats is kept until the pet
+-- changes (its diet), so a bag update costs one CanPetEatItem per new item, not per slot.
 local cache,edibleById=nil,{}
-function F.Invalidate() cache=nil;edibleById={} end
+-- One purchase per vendor visit: bag counts lag behind a purchase, so a retry could buy twice.
+local boughtThisVisit=false
+function F.Invalidate(petChanged) cache=nil;if petChanged then edibleById={} end end
 local function Edible(id)
     local known=edibleById[id]
     if known~=nil then return known end
@@ -489,7 +493,7 @@ function F.MerchantFood()
 end
 function F.AutoBuy()
     local s=NS.EllesmerePetFoodSettings()
-    if not s.autoBuy or Read(_G.UnitExists,'pet')~=true then return end
+    if not s.autoBuy or boughtThisVisit or Read(_G.UnitExists,'pet')~=true then return end
     local have=NS.EllesmerePetFoodCount()
     local need=(Num(s.buyKeep) and s.buyKeep or 20)-have
     if need<=0 then return end
@@ -513,6 +517,7 @@ function F.AutoBuy()
         if not pcall(_G.BuyMerchantItem,pick.index,batch) then break end
         bought=bought+batch
     end
+    if bought>0 then boughtThisVisit=true end
     if bought>0 and DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
         local link=Read(_G.GetMerchantItemLink,pick.index) or pick.name or 'pet food'
         local cost=math.floor(each*bought+.5)
@@ -529,9 +534,16 @@ end
 local driver
 local function OnEvent(_,event,unit)
     if (event=='UNIT_PET' and unit~='player') or (event=='UNIT_LEVEL' and unit~='pet') then return end
-    if event=='BAG_UPDATE_DELAYED' or event=='UNIT_PET' or event=='UNIT_LEVEL' or event=='PLAYER_ENTERING_WORLD' then F.Invalidate() end
+    if event=='BAG_UPDATE_DELAYED' or event=='UNIT_LEVEL' then F.Invalidate()
+    elseif event=='UNIT_PET' or event=='PLAYER_ENTERING_WORLD' then F.Invalidate(true) end
     if event=='CURRENT_SPELL_CAST_CHANGED' or event=='UPDATE_SPELL_TARGET_ITEM_CONTEXT' or event=='BAG_UPDATE_DELAYED' then F.UpdateView() end
-    if event=='MERCHANT_SHOW' then F.AutoBuy();return end
+    if event=='MERCHANT_SHOW' then
+        boughtThisVisit=false;F.AutoBuy()
+        -- Vendor item data can arrive just after the window opens: one more try.
+        if C_Timer and C_Timer.After then C_Timer.After(.6,function() F.AutoBuy() end) end
+        return
+    end
+    if event=='MERCHANT_CLOSED' then boughtThisVisit=false;return end
     if event=='UNIT_AURA' then F.FeedTimer();return end
     if event=='PLAYER_REGEN_DISABLED' then if chooserOpen then chooserOpen=false end return end
     -- A row that should have closed in combat closes as soon as combat ends.
@@ -555,7 +567,7 @@ function NS.SyncEllesmerePetFood()
     driver:RegisterEvent('BAG_UPDATE_DELAYED');driver:RegisterEvent('PLAYER_ENTERING_WORLD')
     if driver.RegisterUnitEvent then driver:RegisterUnitEvent('UNIT_PET','player');driver:RegisterUnitEvent('UNIT_LEVEL','pet')
     else driver:RegisterEvent('UNIT_PET');driver:RegisterEvent('UNIT_LEVEL') end
-    if s.autoBuy then driver:RegisterEvent('MERCHANT_SHOW') end
+    if s.autoBuy then driver:RegisterEvent('MERCHANT_SHOW');driver:RegisterEvent('MERCHANT_CLOSED') end
     if ViewOn() then
         driver:RegisterEvent('CURRENT_SPELL_CAST_CHANGED');driver:RegisterEvent('PLAYER_REGEN_ENABLED');driver:RegisterEvent('PLAYER_REGEN_DISABLED')
         if not C_EventUtils or Read(C_EventUtils.IsEventValid,'UPDATE_SPELL_TARGET_ITEM_CONTEXT')==true then driver:RegisterEvent('UPDATE_SPELL_TARGET_ITEM_CONTEXT') end

@@ -315,8 +315,15 @@ local function Show(key,text,colour,slow,critical)
     row.critical=critical==true
     local db=EllesmereUIDB
     local size=(row.critical and CentreLane()) and CentreSize() or (db and db.durWarnTextSize) or 30
-    row.text:SetFont(EUI.GetFontPath and EUI.GetFontPath('extras') or EUI.EXPRESSWAY or 'Fonts\\FRIZQT__.TTF',size,
-        EUI.GetFontOutlineFlag and EUI.GetFontOutlineFlag('extras') or 'OUTLINE')
+    local font=EUI.GetFontPath and EUI.GetFontPath('extras') or EUI.EXPRESSWAY or 'Fonts\\FRIZQT__.TTF'
+    local outline=EUI.GetFontOutlineFlag and EUI.GetFontOutlineFlag('extras') or 'OUTLINE'
+    local calm=Calm()
+    local last=row.warningPaint
+    row.warningColor=colour
+    if row:IsShown() and not row.leaving and last and last.text==text and last.r==colour[1] and last.g==colour[2] and
+        last.b==colour[3] and last.slow==slow and last.critical==row.critical and last.size==size and last.font==font and last.outline==outline and last.calm==calm then return end
+    row.warningPaint={text=text,r=colour[1],g=colour[2],b=colour[3],slow=slow,critical=row.critical,size=size,font=font,outline=outline,calm=calm}
+    row.text:SetFont(font,size,outline)
     if NS.ApplyEllesmereCueText then NS.ApplyEllesmereCueText(row.text,'world',true) end
     row:SetHeight(size+10)
     row.text:SetText(text); row.text:SetTextColor(colour[1],colour[2],colour[3],1)
@@ -346,6 +353,15 @@ function NS.ShowEllesmereWarning(key,text,colour,slow,critical)
     Show(key,text,colour,slow,critical)
 end
 NS.HideEllesmereWarning=Hide
+function NS.RepaintEllesmereWarnings()
+    for _,row in pairs(rows) do
+        local c=row.warningColor
+        if c and row:IsShown() then
+            row.text:SetTextColor(c[1],c[2],c[3],1)
+            row.warningPaint=nil
+        end
+    end
+end
 
 -------------------------------------------------------------------------------
 -- Ammo
@@ -616,7 +632,7 @@ end,.25)
 local pendingCheck=false
 local function Flush()
     NS.SyncEllesmereNativeWarningOutline()
-    pendingCheck=false;if NS.PetFood then NS.PetFood.Invalidate() end;CheckPetFood();CheckAmmo();CheckTalents();CheckAspects();CheckPetStatus();CheckPetHealth();CheckPetRange();CheckFrenzy()
+    pendingCheck=false;CheckPetFood();CheckAmmo();CheckTalents();CheckAspects();CheckPetStatus();CheckPetHealth();CheckPetRange();CheckFrenzy()
     if petTicker then
         local s=NS.EllesmereWarningSettings()
         if (s.petRange or s.petHealth) and Hunter() and PetAlive() and MendKnown() then petTicker.Start()
@@ -625,6 +641,8 @@ local function Flush()
 end
 driver:SetScript('OnEvent',function(_,event,unit)
     if not Public(unit) then return end
+    -- Pet food counts change only with the bags or the pet.
+    if NS.PetFood and (event=='BAG_UPDATE_DELAYED' or event=='UNIT_PET' and unit=='player') then NS.PetFood.Invalidate(event=='UNIT_PET') end
     if event=='UNIT_INVENTORY_CHANGED' and unit~='player' then return end
     if event:find('^UNIT_') and unit and unit~='player' and unit~='pet' and unit~='target' then return end
     if pendingCheck then return end

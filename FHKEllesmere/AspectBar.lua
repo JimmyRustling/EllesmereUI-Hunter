@@ -87,10 +87,17 @@ local function Short(key)
     key=key:gsub('CTRL%-','C-'):gsub('SHIFT%-','S-'):gsub('ALT%-','A-')
     return #key<=3 and key or nil
 end
+-- Forever Hunter Keys' action groups live in its own namespace (FHKEllesmereNS.groups
+-- is only a fallback for tests and hand-made setups).
+local function Groups()
+    local fhk=rawget(_G,'ForeverHunterKeysNS')
+    if type(fhk)=='table' and type(fhk.groups)=='table' then return fhk.groups end
+    return Table(NS.groups) and NS.groups or {}
+end
 function A.RefreshKeys()
     keys={}
     for _,key in ipairs(L.ORDER) do if names[key] then keys[key]=Short(Read(_G.GetBindingKey,'SPELL '..names[key])) end end
-    for _,group in ipairs(Table(NS.groups) and NS.groups or {}) do
+    for _,group in ipairs(Groups()) do
         local index=Text(group.name) and Read(_G.GetMacroIndexByName,group.name)
         local body=Number(index) and index>0 and Read(_G.GetMacroBody,index)
         local bind=Text(group.name) and Read(_G.GetBindingKey,'MACRO '..group.name)

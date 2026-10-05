@@ -27,10 +27,17 @@ local function Short(key)
     if type(key)~='string' then return nil end
     return (key:gsub('CTRL%-','C-'):gsub('SHIFT%-','S-'):gsub('ALT%-','A-'))
 end
+-- Forever Hunter Keys' action groups live in its own namespace (FHKEllesmereNS.groups
+-- is only a fallback for tests and hand-made setups).
+local function Groups()
+    local fhk=rawget(_G,'ForeverHunterKeysNS')
+    if type(fhk)=='table' and type(fhk.groups)=='table' then return fhk.groups end
+    return type(NS.groups)=='table' and NS.groups or {}
+end
 local macroKeys={}
 function K.RefreshMacroKeys()
     macroKeys={}
-    for _,group in ipairs(type(NS.groups)=='table' and NS.groups or {}) do
+    for _,group in ipairs(Groups()) do
         local body=type(group.body)=='string' and group.body:match('/cast ([^\n]+)')
         if body and type(group.keys)=='table' then
             for clause in body:gmatch('[^;]+') do
@@ -68,6 +75,7 @@ local function SpellOf(icon)
     local fc=cdm and cdm._ecmeFC and cdm._ecmeFC[icon]
     local id=fc and fc.spellID
     if not (Plain(id) and type(id)=='number' and id>0) then return nil end
+    if not (C_Spell and type(C_Spell.GetSpellName)=='function') then return nil end
     local ok,name=pcall(C_Spell.GetSpellName,id)
     if ok and Plain(name) and type(name)=='string' then return name end
 end
@@ -75,10 +83,13 @@ local function Relabel(text)
     local state=hooked[text]
     if not state or state.painting then return end
     local label=K.LabelFor(SpellOf(state.icon))
-    if not label then return end
+    if not state.hasNative or state.native==nil or state.native=='' then label=state.native
+    else label=label or state.native end
     local ok,current=pcall(text.GetText,text)
-    if ok and current==label then return end
-    state.painting=true;text:SetText(label);state.painting=false
+    if not ok or not Plain(current) or label==nil or current==label then return end
+    state.painting=true
+    pcall(text.SetText,text,label)
+    state.painting=false
 end
 K.Relabel=Relabel
 function K.Discover()
@@ -91,8 +102,14 @@ function K.Discover()
             local text=fd and fd.keybindText or icon._keybindText
             if text and text.SetText then
                 if not hooked[text] then
-                    hooked[text]={icon=icon}
-                    hooksecurefunc(text,'SetText',Relabel)
+                    local ok,value=pcall(text.GetText,text)
+                    hooked[text]={icon=icon,native=ok and Plain(value) and value or nil,hasNative=ok and Plain(value)}
+                    hooksecurefunc(text,'SetText',function(_,value)
+                        local state=hooked[text]
+                        if state.painting then return end
+                        state.native=Plain(value) and value or nil;state.hasNative=Plain(value)
+                        Relabel(text)
+                    end)
                 end
                 hooked[text].icon=icon
                 Relabel(text);count=count+1
@@ -101,15 +118,24 @@ function K.Discover()
     end
     return count
 end
+local pending
+function K.Soon(delay)
+    if pending then return end
+    if not (C_Timer and C_Timer.After) then K.Discover();return end
+    pending=true
+    C_Timer.After(delay or 0,function() pending=nil;K.Discover() end)
+end
 local cdmHooked=false
 local function HookCDM()
     local cdm=CDM()
     if cdmHooked or not cdm then return end
     cdmHooked=true
-    -- The tick loop applies through ns.ApplyCachedKeybinds; catch new icons there.
+    -- The options page applies through ns.ApplyCachedKeybinds. Ellesmere's own rebuilds call
+    -- local functions, but every keybind text passes ns.ShowCDMKeybindBadge: an unhooked one
+    -- (a new or rebuilt icon) schedules one discovery pass for the next frame.
     if type(cdm.ApplyCachedKeybinds)=='function' then hooksecurefunc(cdm,'ApplyCachedKeybinds',K.Discover) end
-    if type(cdm.UpdateCDMKeybinds)=='function' then
-        hooksecurefunc(cdm,'UpdateCDMKeybinds',function() if C_Timer and C_Timer.After then C_Timer.After(.05,K.Discover) end end)
+    if type(cdm.ShowCDMKeybindBadge)=='function' then
+        hooksecurefunc(cdm,'ShowCDMKeybindBadge',function(text) if text and not hooked[text] then K.Soon(0) end end)
     end
 end
 
@@ -119,8 +145,8 @@ function NS.SyncEllesmereCdmLabels()
     K.RefreshMacroKeys();HookCDM()
     if not driver then
         driver=CreateFrame('Frame')
-        driver:SetScript('OnEvent',function() K.RefreshMacroKeys();if C_Timer and C_Timer.After then C_Timer.After(.2,K.Discover) else K.Discover() end end)
-        driver:RegisterEvent('PLAYER_ENTERING_WORLD');driver:RegisterEvent('UPDATE_BINDINGS')
+        driver:SetScript('OnEvent',function() K.RefreshMacroKeys();K.Soon(.2) end)
+        driver:RegisterEvent('PLAYER_ENTERING_WORLD');driver:RegisterEvent('UPDATE_BINDINGS');driver:RegisterEvent('UPDATE_MACROS')
     end
     K.Discover()
 end

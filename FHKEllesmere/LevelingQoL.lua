@@ -21,6 +21,7 @@
 local EUI,NS=_G.EllesmereUI,_G.FHKEllesmereNS
 if EUI_CLIENT_BLOCKED or not EUI or not NS then return end
 local L={}
+local unpack=unpack or table.unpack
 NS.LevelingQoL=L
 local DEFAULTS={mirrorSkin=true,rangeFade=false,rangeAlpha=.45,lootLeft=true,lootQuality=2,gatherTrack=false,zoneLevels=true,manaVisible=false,closeBags=true}
 function NS.EllesmereLevelingSettings()
@@ -31,10 +32,11 @@ function NS.EllesmereLevelingSettings()
     return s
 end
 local function Plain(v) return not (issecretvalue and issecretvalue(v)) end
+local function Public(v) if Plain(v) then return v end end
 local function Read(fn,...)
     if type(fn)~='function' then return end
     local ok,a,b,c,d,e,f,g,h=pcall(fn,...)
-    if ok and Plain(a) then return a,b,c,d,e,f,g,h end
+    if ok then return Public(a),Public(b),Public(c),Public(d),Public(e),Public(f),Public(g),Public(h) end
 end
 local function Num(v) return Plain(v) and type(v)=='number' and v==v end
 local function InCombat() return Read(_G.InCombatLockdown)~=false end
@@ -58,7 +60,9 @@ function L.SkinMirror(frame)
     local st=skinned[frame]
     if not on then
         if st then
-            for _,t in ipairs({frame.Border,frame.TextBorder}) do if t then t:SetAlpha(1) end end
+            if frame.Border then frame.Border:SetAlpha(st.borderAlpha or 1) end
+            if frame.TextBorder then frame.TextBorder:SetAlpha(st.textBorderAlpha or 1) end
+            if st.font and frame.Text then frame.Text:SetFont(unpack(st.font)) end
             if st.bg then st.bg:Hide() end
             if st.border and st.border.SetAlpha then st.border:SetAlpha(0) end
             if frame.timer and _G.MirrorTimerAtlas and bar.SetStatusBarTexture then bar:SetStatusBarTexture(MirrorTimerAtlas[frame.timer]) end
@@ -68,6 +72,12 @@ function L.SkinMirror(frame)
     end
     if not st then
         st={}
+        st.borderAlpha=frame.Border and Read(frame.Border.GetAlpha,frame.Border)
+        st.textBorderAlpha=frame.TextBorder and Read(frame.TextBorder.GetAlpha,frame.TextBorder)
+        if frame.Text then
+            local path,size,flags=Read(frame.Text.GetFont,frame.Text)
+            if type(path)=='string' and Num(size) then st.font={path,size,flags or ''} end
+        end
         st.bg=bar:CreateTexture(nil,'BACKGROUND',nil,-7);st.bg:SetAllPoints();st.bg:SetColorTexture(.055,.065,.075,.95)
         st.border=EUI.MakeBorder and EUI.MakeBorder(bar,0,0,0,1) or nil
         skinned[frame]=st
@@ -110,10 +120,12 @@ function L.CheckRange()
         local r=NS.GetUnitRange('target')
         want=r and FAR[r.state] or false
     end
+    if faded and faded.frame~=f then faded.frame:SetAlpha(faded.alpha);faded=nil end
     if want and not faded and f then
         faded={frame=f,alpha=Read(f.GetAlpha,f) or 1}
-        f:SetAlpha(Num(s.rangeAlpha) and s.rangeAlpha or .45)
-    elseif not want and faded then
+    end
+    if want and f then f:SetAlpha(Num(s.rangeAlpha) and s.rangeAlpha or .45)
+    elseif faded then
         faded.frame:SetAlpha(faded.alpha)
         faded=nil
     end
@@ -126,7 +138,8 @@ end
 -------------------------------------------------------------------------------
 -- Loot Left Behind.
 -------------------------------------------------------------------------------
-local loot={}
+local loot,cleared,lootActive={}, {},false
+local lootToken=0
 local function FreeSlots()
     local free=0
     for bag=0,(_G.NUM_BAG_SLOTS or 4) do
@@ -136,22 +149,26 @@ local function FreeSlots()
     return free
 end
 function L.LootOpened()
-    loot={}
+    if not NS.EllesmereLevelingSettings().lootLeft then return end
+    if not lootActive then loot,cleared={},{};lootActive=true end
     local n=Read(_G.GetNumLootItems)
     for i=1,Num(n) and n or 0 do
-        local _,_,count,_,quality=Read(_G.GetLootSlotInfo,i)
+        local _,_,count,_,quality,locked=Read(_G.GetLootSlotInfo,i)
         local link=Read(_G.GetLootSlotLink,i)
         local kind=Read(_G.GetLootSlotType,i)
         local isItem=kind==nil or kind==(Enum and Enum.LootSlotType and Enum.LootSlotType.Item or 1)
-        if type(link)=='string' and isItem then loot[i]={link=link,count=Num(count) and count or 1,quality=Num(quality) and quality or 0} end
+        -- Locked slots (a group roll, someone else's loot) were never yours to take.
+        if not cleared[i] and type(link)=='string' and isItem and locked~=true then loot[i]={link=link,count=Num(count) and count or 1,quality=Num(quality) and quality or 0} end
     end
 end
-function L.LootCleared(slot) if Num(slot) then loot[slot]=nil end end
+function L.LootCleared(slot) if Num(slot) then cleared[slot]=true;loot[slot]=nil end end
 function L.LootClosed()
     local s=NS.EllesmereLevelingSettings()
+    lootActive=false
+    if not s.lootLeft then loot,cleared={},{};return end
     local left={}
     for _,item in pairs(loot) do if item.quality>=(s.lootQuality or 2) then left[#left+1]=item end end
-    loot={}
+    loot,cleared={},{}
     if #left==0 then return end
     local full=FreeSlots()==0
     local parts={}
@@ -160,7 +177,9 @@ function L.LootClosed()
     if DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then DEFAULT_CHAT_FRAME:AddMessage(line) end
     if NS.ShowEllesmereWarning then
         NS.ShowEllesmereWarning('lootLeft','Loot Left Behind ('..#left..')'..(full and ' - Bags Full' or ''),C.caution or {1,.82,0})
-        if C_Timer and C_Timer.After then C_Timer.After(5,function() if NS.HideEllesmereWarning then NS.HideEllesmereWarning('lootLeft') end end) end
+        lootToken=lootToken+1
+        local token=lootToken
+        if C_Timer and C_Timer.After then C_Timer.After(5,function() if token==lootToken and NS.HideEllesmereWarning then NS.HideEllesmereWarning('lootLeft') end end) end
     end
     return left,full
 end
@@ -180,12 +199,13 @@ function L.CheckGather()
     if s.gatherTrack and not InCombat() then
         local M=C_Minimap
         local n=M and Read(M.GetNumTrackingTypes)
-        local any=false
+        local any,readable=false,Num(n)
         for i=1,Num(n) and n or 0 do
             local info=Read(M.GetTrackingInfo,i)
-            if type(info)=='table' and info.type=='spell' and info.active==true then any=true end
+            if type(info)~='table' or not Plain(info.type) or not Plain(info.active) then readable=false
+            elseif info.type=='spell' and info.active==true then any=true end
         end
-        if Num(n) and not any then
+        if readable and not any then
             for _,id in ipairs(GATHER) do if Known(id) then show=SpellName(id);break end end
         end
     end
@@ -248,6 +268,7 @@ end
 local OPEN_EVENTS={MERCHANT_SHOW=true,MAIL_SHOW=true,AUCTION_HOUSE_SHOW=true,TRADE_SHOW=true}
 local CLOSE_EVENTS={MERCHANT_CLOSED=true,MAIL_CLOSED=true,AUCTION_HOUSE_CLOSED=true,TRADE_CLOSED=true}
 local bagsShownAt,interactionAt,bagsHooked=nil,nil,false
+local closeToken=0
 local function Now() return GetTime and GetTime() or 0 end
 local function BagsRoot()
     local root=rawget(_G,'EUI_Bags')
@@ -264,13 +285,20 @@ end
 function L.Interaction(event)
     local root=BagsRoot()
     if not root then return end
-    if OPEN_EVENTS[event] then interactionAt=Now();return end
+    if OPEN_EVENTS[event] then closeToken=closeToken+1;interactionAt=Now();return end
     if not CLOSE_EVENTS[event] or not interactionAt then return end
     local started=interactionAt;interactionAt=nil
     if not NS.EllesmereLevelingSettings().closeBags or Read(root.IsShown,root)~=true or not bagsShownAt then return end
     if NS.PetFood and NS.PetFood.FeedTargeting and NS.PetFood.FeedTargeting() then return end
     -- Opened with the window: shown at most half a second either side of it opening.
-    if math.abs(bagsShownAt-started)<=.5 and type(ToggleAllBags)=='function' then pcall(ToggleAllBags) end
+    if math.abs(bagsShownAt-started)>.5 then return end
+    closeToken=closeToken+1
+    local token,shownAt=closeToken,bagsShownAt
+    C_Timer.After(0,function()
+        if token~=closeToken or interactionAt or bagsShownAt~=shownAt or not NS.EllesmereLevelingSettings().closeBags then return end
+        if NS.PetFood and NS.PetFood.FeedTargeting and NS.PetFood.FeedTargeting() then return end
+        if Read(root.IsShown,root)==true and type(ToggleAllBags)=='function' then pcall(ToggleAllBags) end
+    end)
 end
 
 -------------------------------------------------------------------------------
@@ -294,13 +322,18 @@ local function HookManaReveal()
         return alpha
     end
     uf.UpdateHealthVisibilityUnit=function(unit,...)
+        update(unit,...)
         local frame=uf.frames and uf.frames[unit]
         if unit=='player' and frame and frame._healthVisLive and L.ManaMissing() then
             local shown=frame._visWrap or frame
             shown:SetAlpha(1)
+            local model=frame.Portrait and frame.Portrait.backdrop and frame.Portrait.backdrop._3d
+            if model then model:SetAlpha(1) end
+            local mini=uf.UF_MINI_OF and uf.frames[uf.UF_MINI_OF[unit]]
+            local p=uf.db and uf.db.profile
+            if mini and not (p and p.pet and p.pet.alwaysShow) then mini:SetAlpha(1) end
             return
         end
-        return update(unit,...)
     end
 end
 L.HookManaReveal=HookManaReveal
@@ -331,6 +364,11 @@ function L.OnEvent(_,event,arg1)
 end
 function NS.SyncEllesmereLeveling()
     local s=NS.EllesmereLevelingSettings()
+    if not s.lootLeft then
+        loot,cleared,lootActive={}, {},false;lootToken=lootToken+1
+        if NS.HideEllesmereWarning then NS.HideEllesmereWarning('lootLeft') end
+    end
+    if not s.closeBags then interactionAt=nil;closeToken=closeToken+1 end
     if not driver then driver=CreateFrame('Frame');driver:SetScript('OnEvent',L.OnEvent) end
     driver:UnregisterAllEvents()
     driver:RegisterEvent('ADDON_LOADED');driver:RegisterEvent('PLAYER_ENTERING_WORLD')
