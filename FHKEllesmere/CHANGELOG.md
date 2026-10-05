@@ -5,6 +5,104 @@ E1 = static checks, E2 = mocked integration, E3 = seen working in game. Only E3 
 
 ## [Unreleased]: 1.9.3 (pet food row, Hunter cues, priority 2/3, leveling helpers; new TOC files: full restart)
 
+### Release pass: Ellesmere row tools, owner-only presets, Ellesmere 9.3.8, XP formats, performance (Claude, 2026-10-05)
+- **Why:** player requests before publishing:
+  - "Ellesmere uses cogs for settings, multidirectional arrows, an eye for previews; get those into our UI";
+  - "we shouldn't be overwriting others' settings, keybinds, macros... this is just shipping the Forever Companion and Forever AutoGear and their enhancements to Ellesmere";
+  - "anything that moves the combat or pet combat indicator?";
+  - "patch it to work with the latest Ellesmere";
+  - XP text formats and overlap with native features;
+  - a performance review.
+- **Ellesmere row tools** (`RefinementOptions.lua` `Extras`):
+  - Any companion row half may now carry `swatches` (Ellesmere's `BuildInlineSwatches`), `cog` and `move` (`BuildInlineCog`, the move one with Ellesmere's directions icon), and `preview`: an eye button with Ellesmere's visible / invisible icons, its alpha states and the disabled-reason tooltip.
+  - **Converted:**
+    - Aspects: preview eye and edge swatches on Aspect Element, a layout cog on Aspect Display, a multiSwatch for the six aspect colours.
+    - Pet Auras / Target / XP Bar: size cogs and offset move arrows.
+    - Warnings: threshold cogs, lane move arrows, preview eye, a colour multiSwatch.
+    - Action History: flash, history and key-label cogs, preview eye.
+    - Pet Food button size cog.
+    - General: preview eye on Preview Scenario.
+    - Unit Frames: health and happiness swatches inline.
+    - Nameplates: edge swatches inline; Smooth Cue Fades cog.
+    - Mob Rarity: level and quest swatches inline, a badge cog.
+    - Leveling Helpers: bar swatches inline, a range-fade cog.
+    - Hunter Cues: Feign Death and Growl cogs.
+    - Hunter Colors: two multiSwatch rows.
+  - About 40 option rows fewer. The standalone harness drives every cog row, swatch and preview.
+- **Owner-only presets** (published install = the companion's own features with their defaults):
+  - Shown only alongside ForeverHunterKeys: Hunter Keyboard Layout (Apply / Undo Hunter Layout and Polish, Fade Wing Bars, Guide Quest Bar), Reviewed Hunter Cues, Combat Layout (and `/fhklayout` apply), and Macro Modifier Key Labels.
+  - Everyone else gets **Key Labels And Menu** (Keyboard-First Key Labels, off by default without FHK; Menu And Bags Visibility).
+  - The standalone harness now fails if any owner-only row shows on a published install, or if anything outside the player's own option changes writes a keybind, macro or CVar.
+- **Combat indicators:** Pet Combat Icon gets a size cog and X / Y move arrows (`petCombatSize`, `petCombatX`, `petCombatY`). Combat Icon Style gets a White Block size cog (`combatBlockSize`). The player icon moves with Ellesmere's native combat indicator options. All four keys are in `PROFILE_KEYS`.
+- **Ellesmere 9.3.8** (latest upstream; installed 9.3.5): built `.dev/staged-938` from tag `v9.3.8`; Validate, integration and standalone all pass there.
+  - **Adapter updates:** 9.3.8's XP gradient and Quest XP Overlay helpers are included in the native XP slice. The XP number checks follow 9.3.8's text slots. The no-target opacity checks run only where the core patch provides it (stock has none).
+- **Overlap with 9.3.8:**
+  - Ellesmere now has a **Quest XP Overlay**; our Completed Quest XP stands down (and greys out, saying why) while it is on.
+  - Native XP text slots cover Current %, Current, Current / Max, Current / Max (Remaining), Rested, Rested %, Completed Quests (and %), Level, XP per Hour, Leveling In, Time This Level and Time This Session.
+  - **Not native:** "XP to level" and "% to level" as items of their own. Ellesmere's item list is private, so they can't be added from a plugin; they're a core-patch or upstream request.
+  - Our Session XP tooltip and 10% ticks remain alternatives to the native text items and dividers.
+- **XP Number Format** replaces the Full XP Numbers toggle:
+  - Ellesmere (17.6K), Full (17,600) or Rounded (18K, 1.3M), saved as `xpBar.numbers`; the old toggle maps across.
+  - On 9.3.8, values under 10,000 are always shown in full by Ellesmere.
+- **Performance review:**
+  - Every always-attached OnUpdate is throttled (companion sweep 0.15 s, unit paint 0.15 s, Hunter swing fallback 0.05 s, Hunter-only and skipped with FHK). Animation OnUpdates detach when idle. Tickers run only while their state is live.
+  - **Fixed:** the quest-bar poller ran every frame on installs that never use it; it now attaches only while the quest bar is on.
+  - Rarity's UNIT_HEALTH handler is a table lookup.
+  - FHK Gear has no OnUpdate.
+- **E1/E2:** live and 9.3.8 suites pass; integration 2913 (live) / 2911 (9.3.8, where two patch-only checks are skipped); aspect 174; pet 149; standalone on the installed, stock 9.3.5 and 9.3.8 cores. **No E3**; checks 18-21 in [IN_GAME_CHECKS_2026-10-05.md](IN_GAME_CHECKS_2026-10-05.md).
+
+### Aspect Visibility: Only When Wrong (Ksuper's rule) (Claude, 2026-10-05)
+- **Why:** the player relayed Ksuper2's suggestion: in combat with Cheetah, show Cheetah; in combat with Hawk, nothing; in combat with neither, show Hawk; out of combat, nothing. The existing choices (Always / In Combat / Mouseover) always showed the element in combat.
+- **New choice:** Unit Frames > Aspects > **Aspect Visibility: Only When Wrong**.
+  - Out of combat it is hidden (the same state driver as In Combat). In combat it is invisible while there is no advice, and appears only while the aspect is wrong.
+  - With Cheetah or Pack up, the element shows that aspect with its red pulsing edge and the Hawk badge. With no aspect at all, the main icon shows Hawk, the aspect to cast.
+  - Visibility uses alpha, so it changes safely in combat. In Bar mode the hidden bar keeps its clicks, as Mouseover does.
+- **Note:** Monkey When Mob Is On You still counts as advice. Turn it off for Ksuper's exact rule (Hawk up means nothing shown).
+- **E2:** aspect suite 171 (+7: state driver, Cheetah shown, Hawk hidden, no aspect shows Hawk, other modes unchanged). **No E3**; check 17.
+
+### Standalone proof and corrupted-settings hardening (Claude, 2026-10-05)
+- **Why:** player: confirm FHK Ellesmere and FHK Gear work with no other addons, and do an adversarial review for edge cases, races and loops.
+- **New harness `StandaloneTests.lua` + `RunStandalone.js` (in `npm test`):**
+  - Each addon is loaded file by file in TOC order into a bare client: EllesmereUI's core API names (read from the installed core, then again from stock 9.3.5 in `.dev/staged-935-base`), no Ellesmere modules, and no ForeverHunterKeys, RestedXP, AutoGear or any other addon. Unknown globals stay nil.
+  - It drives login, every registered event out of and in combat, timers and tickers, show/hide scripts, every slash command, and every options row (read, re-set, click), plus the plugin Reset.
+  - A mutation check (a file reaching into `ForeverHunterKeysNS`) confirmed the harness fails on a hidden dependency.
+- **Result:**
+  - Both addons load and run on the installed and the stock 9.3.5 core: FHK Ellesmere 36 files and 381 option rows, FHK Gear 17 files and 142 option rows.
+  - No hidden dependency: every reference to ForeverHunterKeys, RestedXP, AutoGear, LibStub and ForeverGear is guarded, and a static scan found no namespace field that only Forever Hunter Keys provides.
+- **Found and fixed by the corrupted-settings pass** (saved tables replaced by strings, and every saved value given the wrong type):
+  - 32 `FHKEllesmereDB = FHKEllesmereDB or {}` guards kept a non-table value and then indexed it (8 modules errored at login). They now replace any non-table.
+  - `Companion.lua` compared a saved version flag with a number without checking its type.
+  - FHK Gear survived both passes unchanged.
+- **Correction to "Code audit, part 3":** the first bullet over-claimed. `Bootstrap.lua` makes `FHKEllesmereNS` *be* `ForeverHunterKeysNS` when Forever Hunter Keys is installed, so `NS.groups` already held FHK's groups on the owner install, and macro keys were found. The change to read `ForeverHunterKeysNS.groups` explicitly is harmless and clearer, but it fixed no live bug. The other part 3 fixes stand.
+- **E2:** the standalone run plus every existing suite pass; Gear 467. **No E3**; check 16 in [IN_GAME_CHECKS_2026-10-05.md](IN_GAME_CHECKS_2026-10-05.md) runs it in the client.
+
+### Aspect bar: Cheetah / Pack in combat pulses red on itself (Claude, 2026-10-05)
+- **Why:** player: a warning for Cheetah when it is active in combat, with a red border around it, in line with the design rules (state shown on the element itself).
+- **Before:** Icon / Current Only already put a pulsing red edge on the active icon, and Warnings has an optional lane line. In **Bar** mode, though, the red pulse went to the suggested aspect (Hawk), not the one that was wrong.
+- **Now:** on the bar, with Cheetah or Pack active in combat, that button pulses red (Danger Edge Color) and stays at full opacity even when Dim Inactive is on. The aspect to switch to gets the steady gold advice edge (Advice Edge Color). With no aspect at all in combat, the suggestion is still the red one. The same applies on the hover bar in Current Only mode.
+- **Unchanged:** the bar lists learned aspects only, and rebuilds after combat when one is learned.
+- **E2:** aspect suite 164 (+3). **No E3**; check 15 in [IN_GAME_CHECKS_2026-10-05.md](IN_GAME_CHECKS_2026-10-05.md).
+
+### Companion options refresh at once (Claude, 2026-10-05)
+- **Why:** player, in game: switching Aspect Element, Pet Auras (and other section toggles) on left the options under them greyed out until another tab was opened and back.
+- **Cause:** Ellesmere's own rows call `EllesmereUI:RefreshPage()` after a change, which re-reads every row's value and disabled state in place. Most companion builders (Aspects, Pet Auras and Target, and others) only saved and synced.
+- **Fix:** the shared section renderer (`RefinementOptions.lua` `RenderSection`, used by the plugin pages and the 9.3.4 in-page sections) wraps every toggle, dropdown and button so it refreshes the page after its own work. Sliders are left alone so a drag is never interrupted. This covers every companion section, including ones written later.
+- **E1/E2:** 51 files validate; integration 2907 (+2: a toggle refreshes the page, sliders are not wrapped). **No E3**; check 1 in [IN_GAME_CHECKS_2026-10-05.md](IN_GAME_CHECKS_2026-10-05.md).
+- **Also:** one consolidated in-game list, [IN_GAME_CHECKS_2026-10-05.md](IN_GAME_CHECKS_2026-10-05.md), replaces the scattered E3 lists.
+
+### Feed Pet: Food Only shrinks the Ellesmere bags to the pet's food (Claude, 2026-10-05)
+- **Why:** player, in game: casting Feed Pet only opened the normal Ellesmere bags (screenshot: All Items, every category). They want the inventory itself to change: "only show the food the pet can eat, basically shrinking the existing UI".
+- **Likely cause of "nothing happened":** Feed Pet was detected correctly (Forever uses the same rule: `C_Spell.GetTargetSpellID() == 6991`). But the Pet Food Row sat above the bag window, and with the bags at the top of the screen it was drawn off-screen. The row now goes below the bags when there is no room above.
+- **New default, Feeding View = Food Only:**
+  - While Feed Pet waits for food, Ellesmere's own grid draws one **Pet Food (n)** section: everything the pet eats, raw meat included. There are no pinned, recent, empty or "+" sections, whatever tab is open, and the window refits.
+  - Clicking a stack feeds it (Ellesmere's native item button). When Feed Pet ends, the full layout, the tab and the window size come back. Bags that Feed Pet opened close again without redrawing the full layout first.
+  - **How:** Ellesmere's `ns.RenderGridView` / `ns.RenderListView` are wrapped from the companion. No Ellesmere file changes. During the draw only, it takes the All Items layout, borrows one plain, visible category as the carrier (renamed "Pet Food") and suppresses recent, add and empty user sections. All of it is restored right after, even if the draw errors; an error falls back to the normal draw. Outside feeding the wrapper checks one flag.
+  - **Fallback:** without Ellesmere's bag renderer (Blizzard bags, another Ellesmere version), Food Only shows the Pet Food row instead.
+  - **Limits:** Ellesmere never makes the window shorter than its category list. In list mode, only food in the open tab is listed.
+- **Settings:** `petFood.view` gains `filter` (default). A saved plain `row` moves to Food Only once (`viewFilter` flag); Row + Grey Out and Off are kept. The options dropdown is Food Only / Pet Food Row / Row + Grey Out / Off. No new TOC file: `/reload` loads it.
+- **E1/E2:** 51 Lua files validate. Pet food suite 80 (+24): filtered draw, one section, nothing else drawn, Ellesmere state restored, slot data untouched, refit both ways, no refresh loop, list view, hidden-category carrier, error fallback, Feed-Pet-opened bags, the fallback row and the migration. **No E3.**
+- **In game:** cast Feed Pet with the bags closed, then with them open on another tab. Check the single Pet Food section, that clicking feeds, and that the normal layout returns afterwards.
+
 ### Code audit, part 3: three behaviour bugs the mocks hid (Claude, 2026-10-05)
 - **Why:** player: "let's close this all out". A final pass over Codex's part 2, looking for behaviour the mocks could not show.
 - **Fixed:**

@@ -16,7 +16,7 @@ local function Copy(t)
     local c={};for k,v in pairs(t) do c[k]=type(v)=='table' and Copy(v) or v end;return c
 end
 function NS.EllesmereIndicatorSettings(kind)
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local db=FHKEllesmereDB
     db.indicators=db.indicators or {}
     local s=db.indicators[kind]
@@ -251,7 +251,7 @@ end
 function NS.ApplyEllesmereRangePreset(name)
     local preset=RANGE_PRESETS[name]
     if not preset then return false end
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     for key,value in pairs(preset.flat) do FHKEllesmereDB[key]=value end
     for kind,fields in pairs(preset) do
         if kind~='flat' then

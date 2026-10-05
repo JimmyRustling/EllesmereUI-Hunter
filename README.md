@@ -12,13 +12,13 @@ Plugins for [EllesmereUI](https://github.com/EllesmereGaming/EllesmereUI) on WoW
 1. Install EllesmereUI as usual (Wago or CurseForge).
 2. Copy `FHKEllesmere` and `FHKGear` into `World of Warcraft/_classic_beta_/Interface/AddOns/`.
 3. Fully restart WoW (new addon files are not picked up by `/reload`).
-4. Open EllesmereUI's options. The new sections sit on the matching pages: Unit Frames, Quality of Life, Resource Bars > Swing Timer, Cooldown Manager, and Gear.
+4. Open EllesmereUI's options. On EllesmereUI 9.3.5 and later, the companion has its own **Forever Companion** entry in the sidebar (pages: General, Action Bars, Unit Frames, Nameplates, Resource Bars, Warnings), and Gear has its **Gear** tab. Settings use Ellesmere's own controls: cogs, move arrows, preview eyes and color swatches.
 
-Most new features are off by default; turn on what you want.
+Most new features are off by default; turn on what you want. Nothing here changes your keybinds, macros or game settings by itself: those presets belong to the author's private setup and are not part of this release.
 
 ## Status
 
-- Tested with mocked integration suites only (E2). In-game verification (E3) is in progress; see `FHKEllesmere/CHANGELOG.md`.
+- Tested against EllesmereUI **9.3.5** and **9.3.8** with mocked integration suites and a standalone load test (no other addons installed) (E2). In-game verification (E3) is in progress; see `FHKEllesmere/CHANGELOG.md` and `FHKEllesmere/IN_GAME_CHECKS.md`.
 - The companion hooks some Ellesmere internals. An Ellesmere update can break a feature until it is fixed here.
 
 ## Branches

@@ -12,7 +12,7 @@ local POSITIONS={'left','center','right'}
 local FIELDS={leftX=true,leftY=true,centerX=true,centerY=true,rightX=true,rightY=true}
 local BARS={{'ERB_HealthBar','health',false},{'ERB_PrimaryBar','primary',true}}
 local function Settings(key)
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     FHKEllesmereDB.resourceBarZones=FHKEllesmereDB.resourceBarZones or {}
     local zones=FHKEllesmereDB.resourceBarZones
     zones[key]=zones[key] or {enabled=false,left=key=='health' and 'curhp' or 'curpp',center='none',right=key=='health' and 'perhp' or 'perpp'}

@@ -14,7 +14,7 @@ local function ProfileName() return EllesmereUIDB and EllesmereUIDB.activeProfil
 local function State(write)
     local name=ProfileName()
     if write then
-        FHKEllesmereDB=FHKEllesmereDB or {}
+        if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
         FHKEllesmereDB.themePresets=FHKEllesmereDB.themePresets or {}
         local presets=FHKEllesmereDB.themePresets
         presets[name]=presets[name] or {};return presets[name]
@@ -520,27 +520,27 @@ function NS.AddEllesmereThemeDetailOptions(Row)
     Row({id='strongOutlines',type='toggle',text='Strong Theme Outlines',tooltip='Keeps native fonts and sizes, with stronger black outlines on world cues and finer outlines on small bar labels.',
         getValue=function() return not (FHKEllesmereDB and FHKEllesmereDB.vividCueText==false) end,
         setValue=function(v)
-            FHKEllesmereDB=FHKEllesmereDB or {};FHKEllesmereDB.vividCueText=v
+            if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end;FHKEllesmereDB.vividCueText=v
             if NS.SyncEllesmereCueText then NS.SyncEllesmereCueText() end
         end},
         {id='readableFills',type='toggle',text='Readable Colored Fills',tooltip='Your health starts in your class color, then warns gold, orange and red. Resources keep their own hue and brighten as they fill. Enemy bars keep their reaction colors.',
         getValue=function() return not (FHKEllesmereDB and FHKEllesmereDB.vividBarFills==false) end,
         setValue=function(v)
-            FHKEllesmereDB=FHKEllesmereDB or {};FHKEllesmereDB.vividBarFills=v
+            if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end;FHKEllesmereDB.vividBarFills=v
             if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end
             if NS.PaintEllesmereResourceBars then NS.PaintEllesmereResourceBars() end
         end})
     Row({id='pixelEdges',type='toggle',text='Pixel Icon Edges',tooltip='Adds black pixel borders to square cue icons and a thin black edge around transparent status symbols. Native art, tint and positioning stay in place.',
         getValue=function() return not (FHKEllesmereDB and FHKEllesmereDB.pixelIconEdges==false) end,
         setValue=function(v)
-            FHKEllesmereDB=FHKEllesmereDB or {};FHKEllesmereDB.pixelIconEdges=v
+            if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end;FHKEllesmereDB.pixelIconEdges=v
             if NS.SyncEllesmereCueText then NS.SyncEllesmereCueText() end
             if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end
             if NS.ApplyAttackCueSize then NS.ApplyAttackCueSize() end
         end},{id='powerSeparator',type='toggle',text='Health / Power Separator',tooltip='A black physical-pixel line between health and power on custom unit frames. Follows power-bar visibility and preserves native layout.',
         getValue=function() return not (FHKEllesmereDB and FHKEllesmereDB.pixelBarSeparators==false) end,
         setValue=function(v)
-            FHKEllesmereDB=FHKEllesmereDB or {};FHKEllesmereDB.pixelBarSeparators=v
+            if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end;FHKEllesmereDB.pixelBarSeparators=v
             if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end
         end})
 end

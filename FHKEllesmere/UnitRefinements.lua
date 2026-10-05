@@ -282,7 +282,7 @@ end
 -- Dark themes keep the pet fill dark and show happiness as a thin placeable strip.
 local MOOD_DEFAULTS={side='top',thickness=2,gap=0,length=100,align='center',opacity=1,always=false}
 function FHK.EllesmerePetMoodSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.petMoodStrip
     if type(s)~='table' then s={}; FHKEllesmereDB.petMoodStrip=s end
     -- The icon now carries happiness in every theme: the "all themes" strip that
@@ -1007,7 +1007,7 @@ local function InstallText()
     end
     local original, P = ns.ContentToZone, ns.TextPieces
     -- Seed a visible player resource once, then native controls own it.
-    FHKEllesmereDB = FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local player = ns.db and ns.db.profile and ns.db.profile.player
     if player and not FHKEllesmereDB.resourceTextSeeded then
         if not player.powerPercentText or player.powerPercentText == 'none' then
@@ -1185,7 +1185,7 @@ end
 -- beast, ran at 14 %), so besides humanoids the mark learns: a mob whose
 -- "attempts to run away in fear" emote has been seen keeps it by name, per character.
 local function FleeLearned(write)
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local t=rawget(FHKEllesmereDB,'fleeLearned')
     if write and type(t)~='table' then t={};rawset(FHKEllesmereDB,'fleeLearned',t) end
     return type(t)=='table' and t or nil
@@ -1293,6 +1293,12 @@ end
 -- icon's slot (the range block and happiness square grammar). Ellesmere keeps
 -- showing and hiding its icon; the block follows it.
 local COMBAT_BLOCK=12
+-- Player-set sizes and offsets (Unit Frames > Colour and Text Refinements cogs), clamped.
+local function Setting(key,default,min,max)
+    local v=FHKEllesmereDB and FHKEllesmereDB[key]
+    if type(v)~='number' or v~=v then return default end
+    return math.max(min,math.min(max,v))
+end
 local function SyncCombatBlock(icon)
     local block=icon._fhkBlock
     if FHKEllesmereDB and FHKEllesmereDB.combatIconStyle=='native' then
@@ -1309,7 +1315,8 @@ local function SyncCombatBlock(icon)
             hooksecurefunc(icon,method,function() SyncCombatBlock(icon) end)
         end
     end
-    block:ClearAllPoints();block:SetPoint('CENTER',icon,'CENTER',0,0);block:SetSize(COMBAT_BLOCK,COMBAT_BLOCK)
+    local size=Setting('combatBlockSize',COMBAT_BLOCK,6,24)
+    block:ClearAllPoints();block:SetPoint('CENTER',icon,'CENTER',0,0);block:SetSize(size,size)
     local shown=icon:IsShown()
     shown=not (issecretvalue and issecretvalue(shown)) and shown and true or false
     block:SetShown(shown);icon:SetAlpha(0)
@@ -1339,8 +1346,9 @@ local function PaintPetCombat(frame,ns)
     else
         icon:SetTexture('Interface\\AddOns\\EllesmereUI\\media\\combat\\combat-indicator-custom.png');icon:SetTexCoord(0,1,0,1)
     end
-    icon:SetSize(PET_COMBAT_SIZE,PET_COMBAT_SIZE)
-    icon:ClearAllPoints();icon:SetPoint('RIGHT',hp,'LEFT',-4,0)
+    local size=Setting('petCombatSize',PET_COMBAT_SIZE,8,32)
+    icon:SetSize(size,size)
+    icon:ClearAllPoints();icon:SetPoint('RIGHT',hp,'LEFT',Setting('petCombatX',-4,-200,200),Setting('petCombatY',0,-200,200))
     if FHK.ApplyEllesmereIconEdge then FHK.ApplyEllesmereIconEdge(icon) end
     icon:Show()
     SyncCombatBlock(icon)

@@ -30,7 +30,7 @@ local FEIGN_DEATH,FEIGN_LIMIT=5384,360
 local DEFAULTS={ccBreak=false,feign=false,feignWarn=300,growl=false,growlSolo=true,tracking=false,beastTooltip=false,
     petIdle=false,trapBroken=false,reactive=true,huntersMark=false,trueshot=false,rapidKilling=false}
 function NS.EllesmereHunterCueSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.hunterCues
     if type(s)~='table' then s={};FHKEllesmereDB.hunterCues=s end
     for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
@@ -459,20 +459,19 @@ if NS.HunterTalents and NS.HunterTalents.OnChange then NS.HunterTalents.OnChange
 function NS.AddEllesmereHunterCueOptions(Row)
     local s=NS.EllesmereHunterCueSettings()
     local function Set(key,v) s[key]=v;NS.SyncEllesmereHunterCues();if EUI.RefreshPage then EUI:RefreshPage() end end
+    local feign={type='toggle',text='Feign Death Warnings',tooltip='Feign Death Resisted when the cast lands but you are not feigning, and a countdown before Feign Death kills you after 6 minutes.',
+        getValue=function() return s.feign end,setValue=function(v) Set('feign',v) end}
+    feign.cog={title='Feign Death',disabled=function() return not s.feign end,disabledTooltip='Feign Death Warnings',rows={
+        {type='slider',label='Countdown From (sec)',min=60,max=330,step=30,tooltip='Seconds into Feign Death when the countdown starts. It turns red for the last 30 seconds.',
+            get=function() return s.feignWarn end,set=function(v) s.feignWarn=v end}}}
+    local growl={type='toggle',text='Growl Reminder',tooltip='Out of combat: Growl autocast on while in a group (it takes threat from the tank).',
+        getValue=function() return s.growl end,setValue=function(v) Set('growl',v) end}
+    growl.cog={title='Growl Reminder',disabled=function() return not s.growl end,disabledTooltip='Growl Reminder',rows={
+        {type='toggle',label='Also When Off While Solo',tooltip='Also reminds you when Growl autocast is off while solo, where your pet should hold the mob.',
+            get=function() return s.growlSolo end,set=function(v) Set('growlSolo',v) end}}}
     Row({type='toggle',text='Stop Attack On Your Crowd Control',tooltip='Red, above your character: Auto Shot or melee is on while your target is held by your own Freezing Trap, Scatter Shot, Scare Beast or Wyvern Sting.',
-        getValue=function() return s.ccBreak end,setValue=function(v) Set('ccBreak',v) end},
-        {type='toggle',text='Feign Death Warnings',tooltip='Feign Death Resisted when the cast lands but you are not feigning, and a countdown before Feign Death kills you after 6 minutes.',
-        getValue=function() return s.feign end,setValue=function(v) Set('feign',v) end})
-    Row({type='slider',text='Feign Countdown From',min=60,max=330,step=30,
-        tooltip='Seconds into Feign Death when the countdown starts. It turns red for the last 30 seconds.',
-        disabled=function() return not s.feign end,disabledTooltip='Feign Death Warnings',
-        getValue=function() return s.feignWarn end,setValue=function(v) s.feignWarn=v end},
-        {type='toggle',text='Growl Reminder',tooltip='Out of combat: Growl autocast on while in a group (it takes threat from the tank).',
-        getValue=function() return s.growl end,setValue=function(v) Set('growl',v) end})
-    Row({type='toggle',text='Growl Off While Solo',tooltip='Also reminds you when Growl autocast is off while solo, where your pet should hold the mob.',
-        disabled=function() return not s.growl end,disabledTooltip='Growl Reminder',
-        getValue=function() return s.growlSolo end,setValue=function(v) Set('growlSolo',v) end},
-        {type='toggle',text='Tracking Reminder',tooltip='With Improved Tracking learned, names the Track spell that matches your target out of combat (+5% damage to that type).',
+        getValue=function() return s.ccBreak end,setValue=function(v) Set('ccBreak',v) end},feign)
+    Row(growl,{type='toggle',text='Tracking Reminder',tooltip='With Improved Tracking learned, names the Track spell that matches your target out of combat (+5% damage to that type).',
         getValue=function() return s.tracking end,setValue=function(v) Set('tracking',v) end})
     Row({type='toggle',text='Pet Idle',tooltip='In combat with a hostile target: your pet has had no target for 1.5 seconds.',
         getValue=function() return s.petIdle end,setValue=function(v) Set('petIdle',v) end},

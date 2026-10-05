@@ -10,6 +10,13 @@
 --     exact Blizzard overlay. Blizzard's rule (Blizzard_FrameXMLUtil/ItemUtil.lua): the context
 --     is Feed Pet when C_Spell.GetTargetSpellID() == 6991; an item matches when
 --     C_PetInfo.CanPetEatItem(itemID). Blizzard's own bag frames are left to Blizzard.
+--   Food Only (default; player, in-game screenshot: "change the inventory layout to only show
+--     the food the pet can eat, shrinking the existing UI"): while Feed Pet waits for food,
+--     Ellesmere's own bag grid draws a single "Pet Food" section, with no pinned, recent or
+--     empty sections, and the window refits to it. Its category list still sets the
+--     shortest height. Clicking a stack feeds it (the native item button). Everything is
+--     restored when Feed Pet ends. Ellesmere's renderer is wrapped from here; no Ellesmere file
+--     changes, and outside feeding the wrapper only checks one flag.
 --   Pet Food Row (player, from an in-game screenshot of the category view): while Feed Pet
 --     waits for food, a strip on top of the bags lists everything the pet can eat (raw meat
 --     too); a click feeds that stack. Secure buttons, set out of combat only (Feed Pet cannot
@@ -30,14 +37,15 @@ NS.PetFood=F
 local FEED_PET=6991
 local unpack=unpack or table.unpack
 local MAX_CHOICES=8
--- view: 'row' (Pet Food Row) / 'rowgrey' (row plus Blizzard's overlay on Ellesmere bags) / 'off'.
-local DEFAULTS={button=false,view='row',size=28,choice='level',autoBuy=false,buyKeep=20}
+-- view: 'filter' (Food Only) / 'row' (Pet Food Row) / 'rowgrey' (row plus Blizzard's overlay on
+-- Ellesmere bags) / 'off'.
+local DEFAULTS={button=false,view='filter',size=28,choice='level',autoBuy=false,buyKeep=20}
 local ROW_SIZE,ROW_MAX=36,12
 -- Food far below the pet pleases it little (Classic rule; unverified on Forever): Cheapest
 -- only picks food at most this many levels below the pet, else falls back to the closest.
 local CHEAP_FLOOR=20
 function NS.EllesmerePetFoodSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.petFood
     if type(s)~='table' then s={};FHKEllesmereDB.petFood=s end
     -- Once: the row replaced Grey Out / Food Only and is on by default (player request).
@@ -45,10 +53,15 @@ function NS.EllesmerePetFoodSettings()
         s.view=(s.view=='grey' or s.view=='rowgrey') and 'rowgrey' or 'row'
         s.viewRow=true
     end
+    -- Once: Food Only replaced the plain row as the default (player: shrink the bags instead).
+    if not s.viewFilter then
+        if s.view=='row' then s.view='filter' end
+        s.viewFilter=true
+    end
     for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
     return s
 end
-local function ViewOn() local v=NS.EllesmerePetFoodSettings().view;return v=='row' or v=='rowgrey' end
+local function ViewOn() local v=NS.EllesmerePetFoodSettings().view;return v=='filter' or v=='row' or v=='rowgrey' end
 
 local function Plain(v) return not (issecretvalue and issecretvalue(v)) end
 local function Read(fn,...)
@@ -421,7 +434,12 @@ function F.ShowRow()
     if host then width=math.max(width,Read(host.GetWidth,host) or 0) end
     row:SetSize(width,height)
     row:ClearAllPoints()
-    if host then row:SetPoint('BOTTOMLEFT',host,'TOPLEFT',0,6) else row:SetPoint('CENTER',UIParent,'CENTER',0,120) end
+    if host then
+        -- Above the bags, or below them when the bags sit at the top of the screen.
+        local top,screen=Read(host.GetTop,host),Read(UIParent.GetTop,UIParent)
+        if Num(top) and Num(screen) and top+6+height>screen then row:SetPoint('TOPLEFT',host,'BOTTOMLEFT',0,-6)
+        else row:SetPoint('BOTTOMLEFT',host,'TOPLEFT',0,6) end
+    else row:SetPoint('CENTER',UIParent,'CENTER',0,120) end
     row:Show()
 end
 function F.HideRow()
@@ -430,14 +448,104 @@ function F.HideRow()
     restorePending=false
     row:Hide()
 end
+-------------------------------------------------------------------------------
+-- Food Only: Ellesmere's renderer, fed only what the pet eats.
+-------------------------------------------------------------------------------
+local filterOn,renderWrapped=false,nil -- renderWrapped: the Ellesmere bags table we wrapped
+local function BagsNS() local m=EUI._ModuleNS;return type(m)=='table' and type(m.EllesmereUIBags)=='table' and m.EllesmereUIBags or nil end
+local function BagsProfile() return type(EUI._bagsDB)=='table' and type(EUI._bagsDB.profile)=='table' and EUI._bagsDB.profile or {} end
+-- Ellesmere's slot data ({bag, slot, info, categoryIndex, ...}) for edible items only.
+function F.FoodSlots(list)
+    local out={}
+    for _,d in ipairs(type(list)=='table' and list or {}) do
+        local id=type(d)=='table' and type(d.info)=='table' and d.info.itemID
+        if Num(id) and Edible(id) then out[#out+1]=d end
+    end
+    return out
+end
+-- A plain category that All Items draws (not pinned, recent, grouped, a set or hidden) carries
+-- the one Pet Food section; it is renamed only for the length of the render.
+function F.Carrier(cats,food)
+    local hidden=BagsProfile().bagHiddenInAllItems or {}
+    local function Plain(c) return type(c)=='table' and not (c.isPinned or c.isRecent or c.groupName or c.isEquipSet or c.isSetGear or c.isReagentBag) and not hidden[c._defaultName] end
+    for _,d in ipairs(food) do if Plain(cats[d.categoryIndex]) then return d.categoryIndex end end
+    for i,c in ipairs(cats) do if Plain(c) then return i end end
+end
+local function Copy(d,k) local c={};for key,v in pairs(d) do c[key]=v end;c.categoryIndex=k;return c end
+function F.WrapRender()
+    local bns=BagsNS()
+    if not bns then return false end
+    if renderWrapped==bns then return true end
+    if type(bns.RenderGridView)~='function' or type(bns.GetSelection)~='function' then return false end
+    renderWrapped=bns
+    local grid,list,selection=bns.RenderGridView,bns.RenderListView,bns.GetSelection
+    bns.RenderGridView=function(tempItems,displayItems,emptySlots,child,columns,gridW,gridPadX,showPinned,pinnedSet,...)
+        if not filterOn then return grid(tempItems,displayItems,emptySlots,child,columns,gridW,gridPadX,showPinned,pinnedSet,...) end
+        local cm=rawget(_G,'EUI_CategoryManager')
+        local cats=cm and type(cm.GetCategories)=='function' and cm:GetCategories()
+        local root=EllesmereRoot()
+        local food=F.FoodSlots(tempItems)
+        if type(cats)~='table' or not root then return grid(food,food,{},child,columns,gridW,gridPadX,false,pinnedSet,...) end
+        -- The All Items layout, whatever tab is open: one titled section, nothing else.
+        local k=F.Carrier(cats,food)
+        local items={}
+        for i,d in ipairs(food) do items[i]=k and Copy(d,k) or d end
+        local recent,canAssign,name,user=root._recentItems,cm.CanAssignToCategory,k and cats[k].name,{}
+        for i,c in ipairs(cats) do if c.isUserCreated then user[i]=true;c.isUserCreated=nil end end
+        root._recentItems=nil
+        cm.CanAssignToCategory=function() return false end
+        if k then cats[k].name='Pet Food' end
+        bns.GetSelection=function() return 0,nil end
+        local ok,y=pcall(grid,items,items,{},child,columns,gridW,gridPadX,false,pinnedSet,...)
+        bns.GetSelection=selection
+        if k then cats[k].name=name end
+        cm.CanAssignToCategory=canAssign
+        root._recentItems=recent
+        for i in pairs(user) do cats[i].isUserCreated=true end
+        if not ok then
+            if geterrorhandler then geterrorhandler()(y) end
+            return grid(tempItems,displayItems,emptySlots,child,columns,gridW,gridPadX,showPinned,pinnedSet,...)
+        end
+        return y
+    end
+    if type(list)=='function' then
+        bns.RenderListView=function(items,opts,...)
+            if not filterOn or type(opts)~='table' then return list(items,opts,...) end
+            local copy={}
+            for key,v in pairs(opts) do copy[key]=v end
+            copy.emptySlots,copy.pinned,copy.recent=nil,nil,nil
+            return list(F.FoodSlots(items),copy,...)
+        end
+    end
+    return true
+end
+-- Ellesmere only grows its window while open; a fresh size lets it refit both ways.
+local function Refit(root)
+    root._asCols,root._asMaxGridW,root._asMaxH=nil,nil,nil
+    if Read(root.IsShown,root)==true and type(root.RefreshInventory)=='function' then pcall(root.RefreshInventory,root) end
+end
+function F.Filter(on,refresh)
+    local root=EllesmereRoot()
+    on=on and root and F.WrapRender() or false
+    if on==filterOn then return end
+    filterOn=on
+    if not root then return end
+    if refresh~=false then Refit(root) else root._asCols,root._asMaxGridW,root._asMaxH=nil,nil,nil end
+end
+F.Filtering=function() return filterOn end
 function F.Mark()
+    local view=NS.EllesmerePetFoodSettings().view
+    -- Without Ellesmere's bag renderer (Blizzard bags, another Ellesmere version) Food Only
+    -- falls back to the Pet Food row.
+    if view=='filter' then F.Filter(true);if filterOn then return end end
     F.ShowRow()
-    if NS.EllesmerePetFoodSettings().view=='rowgrey' then EllesmereButtons(function(b) Mark(b,true) end) end
+    if view=='rowgrey' then EllesmereButtons(function(b) Mark(b,true) end) end
 end
 function F.Unmark()
     for b in pairs(touched) do Mark(b,false) end
     touched={}
     F.HideRow()
+    F.Filter(false)
 end
 local shownAt=0
 function F.UpdateView()
@@ -449,6 +557,8 @@ function F.UpdateView()
     if on and not feeding then
         feeding=true
         local now=GetTime and GetTime() or 0
+        -- Filter before the bags open, so their first draw is already food only.
+        if root and NS.EllesmerePetFoodSettings().view=='filter' then F.Filter(true,Read(root.IsShown,root)==true) end
         if root and Read(root.IsShown,root)~=true then
             -- Like Blizzard's OpenAllBags on item targeting: open the bags for feeding.
             if type(OpenAllBags)=='function' then pcall(OpenAllBags) end
@@ -458,7 +568,7 @@ function F.UpdateView()
             openedBags=true
         end
         if root and not bagsHooked and type(root.RefreshInventory)=='function' then
-            bagsHooked=pcall(hooksecurefunc,root,'RefreshInventory',function() if feeding then F.Mark() end end)
+            bagsHooked=pcall(hooksecurefunc,root,'RefreshInventory',function() if feeding and not filterOn then F.Mark() end end)
         end
         F.Mark()
         if C_Timer and C_Timer.After then C_Timer.After(0,function() if feeding then F.Mark() end end) end
@@ -466,10 +576,14 @@ function F.UpdateView()
             watch=C_Timer.NewTicker(.5,function() if not FeedTargeting() then F.UpdateView() end end)
         end
     elseif not on and feeding then
-        feeding=false;F.Unmark()
+        feeding=false
         if watch then watch:Cancel();watch=nil end
+        -- Bags we opened close without redrawing the full layout first.
+        local closing=openedBags and root and Read(root.IsShown,root)==true and type(ToggleAllBags)=='function'
+        if closing then F.Filter(false,false) end
+        F.Unmark()
         -- Ellesmere replaces ToggleAllBags; closing through it keeps its own state right.
-        if openedBags and root and Read(root.IsShown,root)==true and type(ToggleAllBags)=='function' then pcall(ToggleAllBags) end
+        if closing then pcall(ToggleAllBags) end
         openedBags=false
     elseif on then F.Mark() end
 end
@@ -585,25 +699,23 @@ end
 function NS.AddEllesmerePetFoodOptions(Row)
     local s=NS.EllesmerePetFoodSettings()
     local function Set(key,v) s[key]=v;NS.SyncEllesmerePetFood();if EUI.RefreshPage then EUI:RefreshPage() end end
-    Row({type='toggle',text='Pet Food Button',tooltip='A button beside the pet frame: left click feeds your chosen food; right click lists every food your pet eats. Hidden in combat. The border shows happiness.',
-        getValue=function() return s.button end,setValue=function(v) Set('button',v) end},
-        {type='dropdown',text='Feeding View',values={row='Pet Food Row',rowgrey='Row + Grey Out',off='Off'},order={'row','rowgrey','off'},
-        tooltip='When you cast Feed Pet, your bags open with a Pet Food row on top: everything your pet eats, raw meat included. Click one to feed it. Row + Grey Out also greys out the rest of your Ellesmere bags.',
+    local button={type='toggle',text='Pet Food Button',tooltip='A button beside the pet frame: left click feeds your chosen food; right click lists every food your pet eats. Hidden in combat. The border shows happiness.',
+        getValue=function() return s.button end,setValue=function(v) Set('button',v) end}
+    button.cog={title='Pet Food Button',disabled=function() return not s.button end,disabledTooltip='Pet Food Button',rows={
+        {type='slider',label='Size',min=20,max=44,step=1,get=function() return s.size end,set=function(v) Set('size',v) end}}}
+    Row(button,{type='dropdown',text='Feeding View',values={filter='Food Only',row='Pet Food Row',rowgrey='Row + Grey Out',off='Off'},order={'filter','row','rowgrey','off'},
+        tooltip='When you cast Feed Pet, your bags open. Food Only shrinks them to one Pet Food section: everything your pet eats, raw meat included. Click one to feed it. Pet Food Row keeps your normal bags and adds a strip of food beside them. Row + Grey Out also greys out the rest.',
         getValue=function() return s.view end,setValue=function(v) Set('view',v) end})
     Row({type='dropdown',text='Food Choice',values={level='Closest To Pet Level',cheap='Cheapest'},order={'level','cheap'},
         tooltip='Closest To Pet Level pleases your pet most. Cheapest uses the lowest vendor value that is no more than 20 levels below your pet.',
         disabled=function() return not (s.button or s.autoBuy) end,disabledTooltip='Pet Food Button',
         getValue=function() return s.choice end,setValue=function(v) Set('choice',v) end},
-        {type='label',text='The Feed Pet Reminder (Warnings) says when to feed'})
+        {type='label',text='Move the button in Unlock Mode: Pet Food'})
     Row({type='toggle',text='Auto-Buy Pet Food',tooltip='At a vendor that sells food your pet eats, tops it up to the amount you set, using Food Choice. At most two stacks per visit and never more than a tenth of your money; every purchase is printed in chat.',
         getValue=function() return s.autoBuy end,setValue=function(v) Set('autoBuy',v) end},
         {type='slider',text='Keep Pet Food',min=5,max=100,step=5,
         disabled=function() return not s.autoBuy end,disabledTooltip='Auto-Buy Pet Food',
         getValue=function() return s.buyKeep end,setValue=function(v) s.buyKeep=v end})
-    Row({type='slider',text='Pet Food Button Size',min=20,max=44,step=1,
-        disabled=function() return not s.button end,disabledTooltip='Pet Food Button',
-        getValue=function() return s.size end,setValue=function(v) Set('size',v) end},
-        {type='label',text='Move it in Unlock Mode: Pet Food'})
 end
 
 local boot=CreateFrame('Frame')

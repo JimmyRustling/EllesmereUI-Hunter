@@ -480,7 +480,7 @@ local function Install()
     if not cfg or type(ns.ST_Apply)~='function' or not _G.ERB_SwingTimerFrame or
         not NS.GetCursorSwingClock then return end
     installed=ns
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local personal=(_G.ForeverHunterKeysNS~=nil)
     if not FHKEllesmereDB.nativeSwingVersion and personal then
         if not cfg.enabled then

@@ -24,16 +24,26 @@ local function Read(fn,...)
     if ok and not Secret(value) then return value end
 end
 function NS.EllesmereXPBarSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.xpBar
     if type(s)~='table' then s={};FHKEllesmereDB.xpBar=s end
     for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
     return s
 end
+-- Ellesmere 9.3.8 has its own Quest XP Overlay (XP Bar > Quest XP Overlay). While it is on,
+-- ours stands down so the bar never shows two overlays.
+local function NativeQuestOverlay()
+    local ab=EUI._ModuleNS and EUI._ModuleNS.EllesmereUIActionBars
+    local p=ab and ab.EAB and ab.EAB.db and ab.EAB.db.profile
+    local x=p and type(p.bars)=='table' and p.bars.XPBar
+    return type(x)=='table' and x.questOverlay==true
+end
+NS.EllesmereNativeQuestOverlay=NativeQuestOverlay
+local function QuestsOn(s) return s.quests and not NativeQuestOverlay() end
 local function Coloured() return NS.GetEllesmereThemePreset and NS.GetEllesmereThemePreset()=='coloured' end
 local function Enabled()
     local s=NS.EllesmereXPBarSettings()
-    return s.quests or s.smooth or s.glow or s.ticks or s.tooltip or s.fullNumbers or Coloured()
+    return QuestsOn(s) or s.smooth or s.glow or s.ticks or s.tooltip or NS.EllesmereXPNumberFormat()~='native' or Coloured()
 end
 local function Snapshot()
     local xp,maxXP,level=Read(UnitXP,'player'),Read(UnitXPMax,'player'),Read(UnitLevel,'player')
@@ -119,6 +129,15 @@ local function PaintColours()
 end
 function NS.SyncEllesmereXPBarEdges() PaintColours() end
 local function L(text) return EUI.L and EUI.L(text) or text end
+-- XP number format (player: "nearest K, full value"): Ellesmere's own (full below 10,000,
+-- 17.6K above), Full (17,600) or Rounded (18K). Every XP text Ellesmere draws goes through
+-- the module formatter wrapped below, in 9.3.5's single readout and 9.3.8's text slots.
+-- Saved as xpBar.numbers; an older Full XP Numbers toggle (fullNumbers) maps across.
+function NS.EllesmereXPNumberFormat()
+    local s=NS.EllesmereXPBarSettings()
+    if s.numbers=='full' or s.numbers=='round' or s.numbers=='native' then return s.numbers end
+    return s.fullNumbers==false and 'native' or 'full'
+end
 local function Number(n) return BreakUpLargeNumbers and BreakUpLargeNumbers(math.floor(n)) or tostring(math.floor(n)) end
 local function SelectionAPI()
     -- Match Forever's vanilla quest window when its log-index API exists.
@@ -221,7 +240,7 @@ end
 local function Paint()
     if not applied or not bar then return end
     local s=NS.EllesmereXPBarSettings()
-    if s.quests then
+    if QuestsOn(s) then
         if not overlay then
             overlay=CreateFrame('StatusBar',nil,holder);overlay:SetAllPoints(bar)
             overlay:EnableMouse(false)
@@ -348,7 +367,7 @@ local function Attach()
     return true
 end
 local function RefreshQuests()
-    if NS.EllesmereXPBarSettings().quests then pendingXP,knownRewards,completedQuests=NS.GetEllesmerePendingQuestXP()
+    if QuestsOn(NS.EllesmereXPBarSettings()) then pendingXP,knownRewards,completedQuests=NS.GetEllesmerePendingQuestXP()
     else pendingXP,knownRewards,completedQuests=0,0,0 end
     Paint()
 end
@@ -395,7 +414,7 @@ function NS.SyncEllesmereXPBar()
         lastValue,lastMax,lastLevel=baseline and baseline.xp,baseline and baseline.max,baseline and baseline.level
         driver:RegisterEvent('ADDON_LOADED');driver:RegisterEvent('PLAYER_ENTERING_WORLD')
         if s.ticks or Coloured() then driver:RegisterEvent('UI_SCALE_CHANGED');driver:RegisterEvent('DISPLAY_SIZE_CHANGED') end
-        if s.quests then driver:RegisterEvent('QUEST_LOG_UPDATE');driver:RegisterEvent('QUEST_TURNED_IN') end
+        if QuestsOn(s) then driver:RegisterEvent('QUEST_LOG_UPDATE');driver:RegisterEvent('QUEST_TURNED_IN') end
         if s.glow or s.smooth or s.tooltip then
             driver:RegisterEvent('PLAYER_XP_UPDATE');driver:RegisterEvent('PLAYER_LEVEL_UP')
             previous=previous or Snapshot()
@@ -423,7 +442,14 @@ InstallFullNumbers=function()
     local native=ab.AbbreviateLargeNumbers
     ab._fhkFullNumbers=native
     ab.AbbreviateLargeNumbers=function(n)
-        if NS.EllesmereXPBarSettings().fullNumbers~=false and Plain(n) then return Number(n) end
+        local mode=NS.EllesmereXPNumberFormat()
+        if Plain(n) and type(n)=='number' then
+            if mode=='full' then return Number(n) end
+            if mode=='round' and n>=1000 then
+                local k=math.floor(n/1000+.5)
+                return k>=1000 and (math.floor(k/100+.5)/10)..'M' or k..'K'
+            end
+        end
         return native(n)
     end
 end
@@ -433,12 +459,17 @@ function NS.AddEllesmereXPBarOptions(Row)
         return {type='toggle',text=text,tooltip=tooltip,getValue=function() return s[key] end,
             setValue=function(v) s[key]=v;NS.SyncEllesmereXPBar() end}
     end
-    Row(Toggle('quests','Completed Quest XP','Shows known XP from completed quests awaiting turn-in.'),
+    local quests=Toggle('quests','Completed Quest XP','Shows known XP from completed quests awaiting turn-in. Stands down while Ellesmere\'s own Quest XP Overlay is on.')
+    quests.disabled=NativeQuestOverlay;quests.disabledTooltip="Ellesmere's Quest XP Overlay is on (XP Bar page)"
+    Row(quests,
         Toggle('smooth','Smooth XP Fill','Eases gains and snaps when the level changes.'))
     Row(Toggle('glow','XP Gain Glow','Briefly highlights the experience you just earned.'),
         Toggle('ticks','10% XP Ticks','Replaces native dividers with subtle ten-percent marks.'))
     Row(Toggle('tooltip','Session XP Tooltip','Adds session XP, XP per hour and estimated time to level.'),
-        Toggle('fullNumbers','Full XP Numbers','Shows raw XP values in full (18,932 / 25,200) instead of rounded (19K / 25K).'))
+        {type='dropdown',text='XP Number Format',values={native='Ellesmere (17.6K)',full='Full (17,600)',round='Rounded (18K)'},order={'native','full','round'},
+            tooltip='How every XP text shows numbers. Ellesmere: in full below 10,000, then one decimal (17.6K). Full: always every digit. Rounded: the nearest thousand (18K).',
+            getValue=function() return NS.EllesmereXPNumberFormat() end,
+            setValue=function(v) s.numbers=v;s.fullNumbers=(v=='full');NS.SyncEllesmereXPBar() end})
     Row({type='label',text='Quest XP unavailable? Check /fhkxp'},{type='label',text='Full numbers apply to the raw-values readout'})
     Row({type='colorpicker',text='Completed Quest XP Color',hasAlpha=false,
         getValue=function() local c=QuestColour(s);return c[1],c[2],c[3],1 end,

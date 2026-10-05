@@ -41,7 +41,7 @@ end
 function NS.ApplyEllesmereReviewedProfile()
     if not Hunter() or not NS.EllesmereWarningSettings or not NS.EllesmerePetMoodSettings or
         not NS.EllesmereIndicatorSettings then return false end
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local db=FHKEllesmereDB
     local warnings,mood,range=NS.EllesmereWarningSettings(),NS.EllesmerePetMoodSettings(),NS.EllesmereIndicatorSettings('range')
     if not db.reviewedProfileBefore or db.reviewedProfileBefore.name~=ProfileName() then

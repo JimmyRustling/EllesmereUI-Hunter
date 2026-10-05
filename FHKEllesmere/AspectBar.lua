@@ -7,7 +7,7 @@ A.ORDER,A.SPELLS,A.Decide=L.ORDER,L.SPELLS,L.Decide
 local DEFAULTS={enabled=false,display='icon',size=30,spacing=4,orientation='horizontal',keys=true,name=false,
     travel=true,monkey=true,style='auto',dim=true,click=false,visibility='always'}
 local CHOICES={display={icon=true,bar=true,current=true},orientation={horizontal=true,vertical=true},
-    style={auto=true,ranged=true,weave=true,melee=true},visibility={always=true,combat=true,mouseover=true}}
+    style={auto=true,ranged=true,weave=true,melee=true},visibility={always=true,combat=true,mouseover=true,alert=true}}
 local LIMITS={size={20,48},spacing={0,12}}
 local POINTS={CENTER=true,TOP=true,BOTTOM=true,LEFT=true,RIGHT=true,TOPLEFT=true,TOPRIGHT=true,BOTTOMLEFT=true,BOTTOMRIGHT=true}
 local function Plain(v) return not (issecretvalue and issecretvalue(v)) end
@@ -290,32 +290,43 @@ function A.Layout()
         if type(UnregisterStateDriver)=='function' then UnregisterStateDriver(clicker,'visibility') end
         clicker:Hide()
     end
-    if type(RegisterStateDriver)=='function' then RegisterStateDriver(holder,'visibility',cfg.visibility=='combat' and '[combat] show; hide' or 'show') else holder:Show() end
-    holder:SetAttribute('hover',cfg.visibility=='mouseover');holder:SetAlpha(cfg.visibility=='mouseover' and 0 or 1)
+    local combatOnly=cfg.visibility=='combat' or cfg.visibility=='alert'
+    if type(RegisterStateDriver)=='function' then RegisterStateDriver(holder,'visibility',combatOnly and '[combat] show; hide' or 'show') else holder:Show() end
+    holder:SetAttribute('hover',cfg.visibility=='mouseover');holder:SetAlpha((cfg.visibility=='mouseover' or cfg.visibility=='alert') and 0 or 1)
     Position()
 end
 function A.Paint(now)
     if not enabled or not holder or not cfg then return end
     local key,tier=A.Advice(now)
     local single=cfg.display~='bar'
+    -- Only When Wrong (Ksuper's rule): hidden out of combat (state driver) and while the right
+    -- aspect is up; shown in combat only while there is advice. Alpha, so it is combat safe.
+    local alert=cfg.visibility=='alert'
+    if alert then holder:SetAlpha(key and (tier=='danger' or tier=='action') and 1 or 0) end
+    -- With no aspect at all, this mode shows the aspect to cast in the main icon.
+    local suggest=alert and single and not active and key and icons[key] and key or nil
     visual:SetAlpha(single and 1 or 0)
-    visual.icon:SetTexture(active and icons[active] or nil);visual.icon:SetAlpha(1)
-    visual.empty:SetText(active and '' or auraReady and '--' or '?')
-    visual.key:SetText(cfg.keys and active and keys[active] or '')
-    if active then local r,g,b=Color(active);SetBorder(visual.border,r,g,b,1) else SetBorder(visual.border,.6,.6,.6,.6) end
+    visual.icon:SetTexture(active and icons[active] or suggest and icons[suggest] or nil);visual.icon:SetAlpha(1)
+    visual.empty:SetText((active or suggest) and '' or auraReady and '--' or '?')
+    visual.key:SetText(cfg.keys and (active or suggest) and keys[active or suggest] or '')
+    if active or suggest then local r,g,b=Color(active or suggest);SetBorder(visual.border,r,g,b,1) else SetBorder(visual.border,.6,.6,.6,.6) end
     Edge(visual,single and tier or nil,single and tier=='danger')
-    local show=single and key and key~=active and icons[key]
+    local show=single and key and key~=active and not suggest and icons[key]
     badge:SetAlpha(show and (tier=='info' and .55 or 1) or 0)
     if show then
         badge.icon:SetTexture(icons[key]);badge.key:SetText(cfg.keys and keys[key] or '')
         local r,g,b=Color(key);SetBorder(badge.border,r,g,b,1)
     end
+    -- Cheetah or Pack in combat (player): the wrong aspect itself pulses red and the one to
+    -- switch to gets the gold advice edge. With no aspect at all, the suggestion is the red one.
+    local wrong=tier=='danger' and (active=='cheetah' or active=='pack') and active or nil
     for _,b in ipairs(buttons) do if b.aspect then
         local chosen=b.aspect==active
-        b:SetAlpha((chosen or not cfg.dim) and 1 or .55)
+        b:SetAlpha((chosen or not cfg.dim or b.aspect==wrong) and 1 or .55)
         if chosen then local r,g,blue=Color(b.aspect);SetBorder(b.border,r,g,blue,1) else SetBorder(b.border,0,0,0,1) end
         b.key:SetText(cfg.keys and keys[b.aspect] or '')
-        Edge(b,b.aspect==key and tier or nil,not single and b.aspect==key and tier=='danger')
+        local t=b.aspect==wrong and 'danger' or b.aspect==key and (wrong and 'action' or tier) or nil
+        Edge(b,t,t=='danger')
     end end
     label:SetText(cfg.name and (active and names[active] or auraReady and 'No Aspect' or 'Aspect Unknown') or '')
     if clicker and cfg.click and OutsideCombat() then
@@ -415,10 +426,8 @@ function A.Enabled() return enabled end
 -- Static search labels never create settings or frames.
 function NS.AddEllesmereAspectOptions(Row)
     if EUI.IsSearchPrebuild and EUI.IsSearchPrebuild() then
-        local labels={'Aspect Element','Aspect Display','Aspect Icon Size','Aspect Bar Spacing','Aspect Bar Orientation','Dim Inactive Aspects',
-            'Aspect Key Labels','Aspect Name','Travel Advice','Monkey When Mob Is On You','Melee Style','Aspect Visibility','Click Advice Out of Combat','Aspect Preview',
-            'Move Aspects in Unlock Mode','Current Only: hover for the learned bar','Advice Edge Color','Danger Edge Color',
-            'Hawk Edge Color','Monkey Edge Color','Cheetah Edge Color','Pack Edge Color','Beast Edge Color','Wild Edge Color','Reset Aspect Colors'}
+        local labels={'Aspect Element','Aspect Display','Aspect Key Labels','Aspect Name','Travel Advice','Monkey When Mob Is On You',
+            'Melee Style','Aspect Visibility','Click Advice Out of Combat','Aspect Colors','Move Aspects in Unlock Mode','Reset Aspect Colors'}
         for i=1,#labels,2 do Row({type='label',text=labels[i]},labels[i+1] and {type='label',text=labels[i+1]} or EUI.BlankRowCfg()) end
         return
     end
@@ -437,28 +446,41 @@ function NS.AddEllesmereAspectOptions(Row)
     local function Drop(text,k,values,order,disabled)
         return {type='dropdown',text=text,values=values,order=order,getValue=function() return Settings()[k] end,setValue=function(v) Set(k,v) end,disabled=disabled,disabledTooltip='Aspect Element'}
     end
-    Row(Toggle('Aspect Element','enabled'),Drop('Aspect Display','display',{icon='Icon',bar='Bar',current='Current Only'},{'icon','bar','current'},Off))
-    Row({type='slider',text='Aspect Icon Size',min=20,max=48,step=1,getValue=function() return Settings().size end,setValue=function(v) Set('size',v) end,disabled=Off,disabledTooltip='Aspect Element'},
-        {type='slider',text='Aspect Bar Spacing',min=0,max=12,step=1,getValue=function() return Settings().spacing end,setValue=function(v) Set('spacing',v) end,disabled=NotBar,disabledTooltip='Aspect Display: Bar or Current Only'})
-    Row(Drop('Aspect Bar Orientation','orientation',{horizontal='Horizontal',vertical='Vertical'},{'horizontal','vertical'},NotBar),Toggle('Dim Inactive Aspects','dim',NotBar))
-    Row(Toggle('Aspect Key Labels','keys',Off),Toggle('Aspect Name','name',Off))
-    Row(Toggle('Travel Advice','travel',Off),Toggle('Monkey When Mob Is On You','monkey',Off))
-    Row(Drop('Melee Style','style',{auto='Auto',ranged='Ranged',weave='Ranged + Weave',melee='Melee'},{'auto','ranged','weave','melee'},Off),
-        Drop('Aspect Visibility','visibility',{always='Always',combat='In Combat',mouseover='Mouseover'},{'always','combat','mouseover'},Off))
-    Row(Toggle('Click Advice Out of Combat','click',function() return Off() or Settings().display~='icon' end),
-        {type='button',text='Aspect Preview',onClick=NS.PreviewEllesmereAspects,disabled=Off,disabledTooltip='Aspect Element'})
-    Row({type='label',text='Move Aspects in Unlock Mode'},{type='label',text='Current Only: hover for the learned bar'})
+    -- Ellesmere's row tools: the eye previews, inline swatches carry the edge colours, and the
+    -- cog holds the layout (size, spacing, orientation, dimming), as on native pages.
     local function Swatch(key,text)
-        return {type='colorpicker',text=text,hasAlpha=false,getValue=function()
+        return {tooltip=text,hasAlpha=false,getValue=function()
             local saved=cfg;cfg=Settings();local r,g,b=Color(key);cfg=saved;return r,g,b,1
         end,setValue=function(r,g,b)
             if not Number(r) or not Number(g) or not Number(b) or r<0 or r>1 or g<0 or g>1 or b<0 or b>1 then return end
             local s=Settings();s.colors=Table(s.colors) and s.colors or {};s.colors[key]={r,g,b};NS.SyncEllesmereAspects()
         end}
     end
-    Row(Swatch('action','Advice Edge Color'),Swatch('danger','Danger Edge Color'))
-    for i=1,#L.ORDER,2 do local a,b=L.ORDER[i],L.ORDER[i+1];Row(Swatch(a,a:gsub('^%l',string.upper)..' Edge Color'),Swatch(b,b:gsub('^%l',string.upper)..' Edge Color')) end
-    Row({type='button',text='Reset Aspect Colors',onClick=function() Settings().colors=nil;NS.SyncEllesmereAspects() end},EUI.BlankRowCfg())
+    local element=Toggle('Aspect Element','enabled')
+    element.swatches={Swatch('action','Advice Edge Color'),Swatch('danger','Danger Edge Color')}
+    element.preview={tip='Preview aspect advice',show=NS.PreviewEllesmereAspects,duration=3,disabled=Off,disabledTooltip='Aspect Element'}
+    local display=Drop('Aspect Display','display',{icon='Icon',bar='Bar',current='Current Only'},{'icon','bar','current'},Off)
+    display.tooltip='Icon: the current aspect. Bar: every learned aspect. Current Only: the current aspect; hover it for the learned bar.'
+    local barTip='Aspect Display: Bar or Current Only'
+    display.cog={title='Aspect Layout',rows={
+        {type='slider',label='Icon Size',min=20,max=48,step=1,get=function() return Settings().size end,set=function(v) Set('size',v) end},
+        {type='slider',label='Bar Spacing',min=0,max=12,step=1,get=function() return Settings().spacing end,set=function(v) Set('spacing',v) end,
+            disabled=NotBar,disabledTooltip=barTip},
+        {type='dropdown',label='Bar Orientation',values={horizontal='Horizontal',vertical='Vertical'},order={'horizontal','vertical'},
+            get=function() return Settings().orientation end,set=function(v) Set('orientation',v) end,disabled=NotBar,disabledTooltip=barTip},
+        {type='toggle',label='Dim Inactive Aspects',get=function() return Settings().dim end,set=function(v) Set('dim',v) end,
+            disabled=NotBar,disabledTooltip=barTip}}}
+    Row(element,display)
+    Row(Toggle('Aspect Key Labels','keys',Off),Toggle('Aspect Name','name',Off))
+    Row(Toggle('Travel Advice','travel',Off),Toggle('Monkey When Mob Is On You','monkey',Off))
+    Row(Drop('Melee Style','style',{auto='Auto',ranged='Ranged',weave='Ranged + Weave',melee='Melee'},{'auto','ranged','weave','melee'},Off),
+        Drop('Aspect Visibility','visibility',{always='Always',combat='In Combat',mouseover='Mouseover',alert='Only When Wrong'},{'always','combat','mouseover','alert'},Off))
+    local colors={}
+    for _,key in ipairs(L.ORDER) do colors[#colors+1]=Swatch(key,key:gsub('^%l',string.upper)..' Edge Color') end
+    Row(Toggle('Click Advice Out of Combat','click',function() return Off() or Settings().display~='icon' end),
+        {type='multiSwatch',text='Aspect Colors',swatches=colors,disabled=Off,disabledTooltip='Aspect Element'})
+    Row({type='label',text='Move Aspects in Unlock Mode'},
+        {type='button',text='Reset Aspect Colors',onClick=function() Settings().colors=nil;NS.SyncEllesmereAspects() end})
 end
 driver:SetScript('OnEvent',A.OnEvent);driver:RegisterEvent('PLAYER_LOGIN')
 if NS.HunterTalents and NS.HunterTalents.OnChange then NS.HunterTalents.OnChange(function() if enabled and cfg.style=='auto' then Queue() end end) end

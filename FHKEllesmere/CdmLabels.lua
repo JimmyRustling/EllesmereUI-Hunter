@@ -13,7 +13,7 @@ local K={}
 NS.CdmLabels=K
 local DEFAULTS={macroKeys=true}
 function NS.EllesmereCdmLabelSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.cdmLabels
     if type(s)~='table' then s={};FHKEllesmereDB.cdmLabels=s end
     for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
@@ -169,6 +169,11 @@ end
 
 function NS.AddEllesmereCdmLabelOptions(Row)
     local s=NS.EllesmereCdmLabelSettings()
+    if _G.ForeverHunterKeysNS==nil then
+        Row({type='label',text='Manual label: /fhkcdm label Rapid Fire = S-3'},
+            {type='button',text='Clear Manual Labels',onClick=function() s.labels={};K.Discover() end})
+        return
+    end
     Row({type='toggle',text='Macro Modifier Key Labels',tooltip='Spells cast from Forever Hunter Keys modifier macros show their exact key on cooldown icons, for example C-X for Aspect of the Hawk on Ctrl+X, instead of the macro\'s bare key.',
         getValue=function() return s.macroKeys end,setValue=function(v) s.macroKeys=v;K.Discover() end},
         {type='button',text='Clear Manual Labels',onClick=function() s.labels={};K.Discover() end})

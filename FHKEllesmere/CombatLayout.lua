@@ -73,7 +73,7 @@ local ICON_CVARS={SoftTargetIconEnemy='0',SoftTargetIconFriend='0'}
 
 -- Undo: {root,path...} -> {value}. A path seen once keeps its first value.
 local function Store(write)
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local all=rawget(FHKEllesmereDB,'combatLayout')
     if write and not all then all={};rawset(FHKEllesmereDB,'combatLayout',all) end
     local name=ProfileName()
@@ -370,6 +370,9 @@ SlashCmdList.FHKLAYOUT=function(input)
     local cmd=tostring(input or ''):lower():match('^%s*(%S*)')
     local ok,message
     if cmd=='undo' then ok,message=NS.UndoEllesmereCombatLayout()
+    elseif (cmd=='' or cmd=='apply') and _G.ForeverHunterKeysNS==nil then
+        -- The owner's arrangement: never applied on a published install (undo still works).
+        print('FHK: the Combat Layout is part of the Forever Hunter Keys setup; /fhklayout undo restores an earlier one.');return
     elseif cmd=='' or cmd=='apply' then ok,message=NS.ApplyEllesmereCombatLayout()
     else print('FHK: /fhklayout applies the Combat Layout; /fhklayout undo restores your previous layout.');return end
     print('FHK: '..(ok and (cmd=='undo' and 'Combat Layout undone; your previous layout is back.' or

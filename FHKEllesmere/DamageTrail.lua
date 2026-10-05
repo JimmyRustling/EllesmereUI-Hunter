@@ -12,7 +12,7 @@ local function Plain(v)
     return not (issecretvalue and issecretvalue(v)) and type(v)=='number' and v==v and math.abs(v)<math.huge
 end
 function NS.EllesmereDamageTrailSettings(kind)
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     FHKEllesmereDB.damageTrails=FHKEllesmereDB.damageTrails or {}
     local all=FHKEllesmereDB.damageTrails
     if not rawget(FHKEllesmereDB,'quickDamageTrailApplied') then

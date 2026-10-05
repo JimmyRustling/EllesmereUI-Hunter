@@ -900,7 +900,7 @@ end
 FHK.MigrateEllesmereNeutralFill = MigrateNeutralFill
 local function RefineNativeIndicators()
     if db.refinementVersion == 5 then return end
-    if db.refinementVersion and db.refinementVersion >= 2 then MigrateNeutralFill(); db.refinementVersion = 5; return end
+    if type(db.refinementVersion) == 'number' and db.refinementVersion >= 2 then MigrateNeutralFill(); db.refinementVersion = 5; return end
     db.targetDistanceBefore = EllesmereUIDB and EllesmereUIDB.targetDistanceEnabled
     if EllesmereUIDB then EllesmereUIDB.targetDistanceEnabled = false end
     if EUI._applyTargetDistance then EUI._applyTargetDistance() end
@@ -1220,7 +1220,7 @@ FHK.ApplyEllesmereHunterColours=function() ApplyHunterColours(true) end
 FHK.EllesmereHunterColourDefaults=function() return shipped end
 
 local function Initialize()
-    FHKEllesmereDB = FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     db = FHKEllesmereDB
     ApplyHunterColours(false)
     RangedEquipment()

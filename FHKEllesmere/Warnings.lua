@@ -205,7 +205,7 @@ function NS.SyncEllesmereErrorRoutes()
 end
 
 function NS.EllesmereWarningSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.warnings
     if type(s)~='table' then s={}; FHKEllesmereDB.warnings=s end
     for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
@@ -717,44 +717,49 @@ function NS.SetEllesmereAmmoThreshold(key,v)
 end
 function NS.AddEllesmereWarningOptions(Row)
     local s=NS.EllesmereWarningSettings()
-    Row({type='toggle',text='Low Ammo Warning',tooltip='Warns below the low threshold out of combat, and always when nearly out, the ammo slot is empty or the ammo does not fit your weapon.',
-        getValue=function() return s.ammo end,setValue=function(v) s.ammo=v; NS.SyncEllesmereWarnings() end},
-        {type='toggle',text='Unspent Talent Warning',tooltip='Shows out of combat while you have talent points to spend.',
+    -- Ellesmere's row tools: thresholds in the cogs, positions behind the move arrows, the
+    -- preview eye, and the lane colours as swatches.
+    local ammo={type='toggle',text='Low Ammo Warning',tooltip='Warns below the low threshold out of combat, and always when nearly out, the ammo slot is empty or the ammo does not fit your weapon.',
+        getValue=function() return s.ammo end,setValue=function(v) s.ammo=v; NS.SyncEllesmereWarnings() end}
+    ammo.cog={title='Ammo Thresholds',disabled=function() return not s.ammo end,disabledTooltip='Low Ammo Warning',rows={
+        {type='slider',label='Low Ammo Below',min=50,max=1000,step=50,get=function() return s.ammoLow end,set=function(v) NS.SetEllesmereAmmoThreshold('ammoLow',v) end},
+        {type='slider',label='Critical Ammo At',min=0,max=200,step=10,get=function() return s.ammoCritical end,set=function(v) NS.SetEllesmereAmmoThreshold('ammoCritical',v) end}}}
+    Row(ammo,{type='toggle',text='Unspent Talent Warning',tooltip='Shows out of combat while you have talent points to spend.',
         getValue=function() return s.talents end,setValue=function(v) s.talents=v; NS.SyncEllesmereWarnings() end})
-    Row({type='slider',text='Low Ammo Below',min=50,max=1000,step=50,
-        getValue=function() return s.ammoLow end,setValue=function(v) NS.SetEllesmereAmmoThreshold('ammoLow',v) end},
-        {type='slider',text='Critical Ammo At',min=0,max=200,step=10,
-        getValue=function() return s.ammoCritical end,setValue=function(v) NS.SetEllesmereAmmoThreshold('ammoCritical',v) end})
+    local mend={type='toggle',text='Mend Pet Reminder',tooltip='Warns below the pet health threshold; hides while Mend Pet is already active or the pet is out of range.',
+        getValue=function() return s.petHealth end,setValue=function(v) s.petHealth=v;NS.SyncEllesmereWarnings() end}
+    mend.cog={title='Mend Pet',disabled=function() return not (s.petHealth or s.petRange) end,disabledTooltip='Mend Pet Reminder or Pet Too Far To Mend',rows={
+        {type='slider',label='Mend Pet At Health %',min=5,max=90,step=5,get=function() return s.petLow end,set=function(v) s.petLow=v;Flush() end}}}
     Row({type='toggle',text='Cheetah / Pack Combat Warning',tooltip='Warns while either movement aspect is active in combat. When Aspect Element is enabled, its red edge shows this warning instead.',
-        getValue=function() return s.aspects end,setValue=function(v) s.aspects=v;NS.SyncEllesmereWarnings() end},
-        {type='toggle',text='Mend Pet Reminder',tooltip='Warns below the pet health threshold; hides while Mend Pet is already active or the pet is out of range.',
-        getValue=function() return s.petHealth end,setValue=function(v) s.petHealth=v;NS.SyncEllesmereWarnings() end})
+        getValue=function() return s.aspects end,setValue=function(v) s.aspects=v;NS.SyncEllesmereWarnings() end},mend)
     Row({type='toggle',text='Pet Too Far To Mend',tooltip='Warns only when your pet is below the Mend Pet health threshold and out of Mend Pet range. Distance alone stays quiet.',
         getValue=function() return s.petRange end,setValue=function(v) s.petRange=v;NS.SyncEllesmereWarnings() end},
-        {type='slider',text='Mend Pet At Health %',min=5,max=90,step=5,
-        getValue=function() return s.petLow end,setValue=function(v) s.petLow=v;Flush() end})
-    Row({type='toggle',text='Missing / Dead Pet In Combat',tooltip='Shows Call / Revive Pet when absent and Revive Pet when death is confirmed. Quiet while you are dead, mounted, on a taxi or in a vehicle.',
-        getValue=function() return s.petStatus end,setValue=function(v) s.petStatus=v;NS.SyncEllesmereWarnings() end},
-        {type='label',text='Pet health and happiness use separate colors'})
+        {type='toggle',text='Missing / Dead Pet In Combat',tooltip='Shows Call / Revive Pet when absent and Revive Pet when death is confirmed. Quiet while you are dead, mounted, on a taxi or in a vehicle.',
+        getValue=function() return s.petStatus end,setValue=function(v) s.petStatus=v;NS.SyncEllesmereWarnings() end})
     Row({type='toggle',text='Feed Pet Reminder',tooltip='Out of combat: amber for a content pet and red for an unhappy pet. Quiet for Lone Wolf, missing/dead pets, travel, and unreadable happiness.',
         getValue=function() return s.feed==true end,setValue=function(v) s.feed=v;NS.SyncEllesmereWarnings() end},
         {type='toggle',text='Remind When Content',getValue=function() return s.feedContent==true end,setValue=function(v) s.feedContent=v;NS.SyncEllesmereWarnings() end,
         disabled=function() return s.feed~=true end,disabledTooltip='Feed Pet Reminder'})
-    Row({type='toggle',text='Pet Food Warning',tooltip='Out of combat: No Pet Food when nothing in your bags is food your pet eats, Low Pet Food below the amount you set.',
-        getValue=function() return s.petFood==true end,setValue=function(v) s.petFood=v;NS.SyncEllesmereWarnings() end},
-        {type='slider',text='Low Pet Food Below',min=0,max=60,step=5,
-        disabled=function() return s.petFood~=true end,disabledTooltip='Pet Food Warning',
-        getValue=function() return s.petFoodLow end,setValue=function(v) s.petFoodLow=v;Flush() end})
-    Row({type='toggle',text='Top Alert Lane',tooltip='Moves the red game error line (Out of range, No target) to the top of the screen, large, in the warning font, with these warnings directly beneath it. Off restores the native error line and puts warnings back under Low Durability.',
-        getValue=function() return s.errorRaise end,setValue=function(v) s.errorRaise=v;NS.SyncEllesmereErrorText() end},
-        {type='slider',text='Error Text Distance From Top',min=20,max=400,step=10,
-        getValue=function() return s.errorY end,setValue=function(v) s.errorY=v;NS.SyncEllesmereErrorText() end})
+    local food={type='toggle',text='Pet Food Warning',tooltip='Out of combat: No Pet Food when nothing in your bags is food your pet eats, Low Pet Food below the amount you set.',
+        getValue=function() return s.petFood==true end,setValue=function(v) s.petFood=v;NS.SyncEllesmereWarnings() end}
+    food.cog={title='Pet Food Warning',disabled=function() return s.petFood~=true end,disabledTooltip='Pet Food Warning',rows={
+        {type='slider',label='Low Pet Food Below',min=0,max=60,step=5,get=function() return s.petFoodLow end,set=function(v) s.petFoodLow=v;Flush() end}}}
+    Row(food,{type='toggle',text='Frenzy: Tranquilizing Shot',tooltip='In combat, warns when your enemy target has a Frenzy effect. Quiet until you know Tranquilizing Shot.',
+        getValue=function() return s.tranq end,setValue=function(v) s.tranq=v;NS.SyncEllesmereWarnings() end})
     Row({type='toggle',text='Hide Spam Errors',tooltip='Hides "Spell is not ready yet", "Ability is not ready yet", "Out of range" and "Not enough mana" and their voice lines, like retail does. Errors that need an action still show in red.',
         getValue=function() return s.errorFilter end,setValue=function(v) s.errorFilter=v;NS.SyncEllesmereErrorFilter() end},
         {type='toggle',text='Hide Errors A Warning Shows',tooltip='Hides the red error line when a warning already shows the same problem: Target too close (range indicator), facing (Face Target), out of ammo (ammo warning) and a dead pet (pet warning).',
         getValue=function() return s.errorRoute==true end,setValue=function(v) s.errorRoute=v;NS.SyncEllesmereErrorRoutes() end})
-    Row({type='toggle',text='Frenzy: Tranquilizing Shot',tooltip='In combat, warns when your enemy target has a Frenzy effect. Quiet until you know Tranquilizing Shot.',
-        getValue=function() return s.tranq end,setValue=function(v) s.tranq=v;NS.SyncEllesmereWarnings() end})
+    local lane={type='toggle',text='Top Alert Lane',tooltip='Moves the red game error line (Out of range, No target) to the top of the screen, large, in the warning font, with these warnings directly beneath it. Off restores the native error line and puts warnings back under Low Durability.',
+        getValue=function() return s.errorRaise end,setValue=function(v) s.errorRaise=v;NS.SyncEllesmereErrorText() end}
+    lane.move={title='Top Alert Lane Position',disabled=function() return not s.errorRaise end,disabledTooltip='Top Alert Lane',rows={
+        {type='slider',label='Distance From Top',min=20,max=400,step=10,get=function() return s.errorY end,set=function(v) s.errorY=v;NS.SyncEllesmereErrorText() end}}}
+    lane.preview={tip='Preview warnings',show=function() NS.PreviewEllesmereWarnings() end,duration=4}
+    local above={type='toggle',text='Combat Warnings Above Character',tooltip='In combat, warnings that need an action now (pet health, dead pet, out of ammo, Frenzy, unsafe aspect) move above your character. Information stays in the top lane.',
+        getValue=function() return s.critical end,setValue=function(v) s.critical=v;NS.SyncEllesmereWarnings() end}
+    above.move={title='Combat Warning Position',disabled=function() return not s.critical end,disabledTooltip='Combat Warnings Above Character',rows={
+        {type='slider',label='Height Above Character',min=60,max=300,step=10,get=function() return s.criticalY end,set=function(v) s.criticalY=v;Layout() end}}}
+    Row(lane,above)
     local soundValues={none='None',raid='Raid Warning',alarm='Alarm',ready='Ready Check',tick='Soft Tick'}
     local soundOrder={'none','raid','alarm','ready','tick'}
     Row({type='dropdown',text='Act-Now Warning Sound',values=soundValues,order=soundOrder,
@@ -763,17 +768,11 @@ function NS.AddEllesmereWarningOptions(Row)
         {type='dropdown',text='Other Warning Sound',values=soundValues,order=soundOrder,
         tooltip='Plays when any other warning appears.',
         getValue=function() return s.warnSound end,setValue=function(v) s.warnSound=v;Sound('preview2',false) end})
-    Row({type='toggle',text='Combat Warnings Above Character',tooltip='In combat, warnings that need an action now (pet health, dead pet, out of ammo, Frenzy, unsafe aspect) move above your character. Information stays in the top lane.',
-        getValue=function() return s.critical end,setValue=function(v) s.critical=v;NS.SyncEllesmereWarnings() end},
-        {type='slider',text='Combat Warning Height',min=60,max=300,step=10,
-        getValue=function() return s.criticalY end,setValue=function(v) s.criticalY=v;Layout() end})
-    if NS.EllesmereColorRow then
-        Row(NS.EllesmereColorRow('alert','Act-Now Warning Color','Red warnings: out of ammo, dead pet, Stop Attack, Feign Death.'),
-            NS.EllesmereColorRow('caution','Caution Warning Color','Amber warnings: low ammo, feed pet, low pet food. Also the dead-zone approach color.'))
-        Row(NS.EllesmereResetColors({'alert','caution'},'Reset Warning Colors'),{type='label',text='Shown the next time a warning appears'})
+    if NS.EllesmereColorSwatch then
+        Row({type='multiSwatch',text='Warning Colors',tooltip='Act-Now (red: out of ammo, dead pet, Stop Attack, Feign Death) and Caution (amber: low ammo, feed pet, low pet food, the dead-zone approach).',
+            swatches={NS.EllesmereColorSwatch('alert','Act-Now Warning Color'),NS.EllesmereColorSwatch('caution','Caution Warning Color')}},
+            NS.EllesmereResetColors({'alert','caution'},'Reset Warning Colors'))
     end
-    Row({type='button',text='Preview Warnings',onClick=function() NS.PreviewEllesmereWarnings() end},
-        {type='label',text='Top of the screen, under the game error line'})
 end
 
 local boot=CreateFrame('Frame')

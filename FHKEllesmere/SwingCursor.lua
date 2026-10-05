@@ -18,7 +18,7 @@ local function PublicNumber(v)
     return not (issecretvalue and issecretvalue(v)) and type(v)=='number' and v==v and v>-math.huge and v<math.huge
 end
 local function Settings()
-    FHKEllesmereDB = FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     FHKEllesmereDB.swingCursor = FHKEllesmereDB.swingCursor or {
         enabled=false, mode='ranged', matchGCD=true, radius=27, ringTex='light', alpha=80, combatOnly=false,
         readinessColors=true, showMeleeReady=true, showRangedReady=false, combinedRings='two',
@@ -253,7 +253,7 @@ local function InstallOptions()
     local reset = _G._EBS_ResetCursor
     if reset and reset ~= resetWrapper then
         resetWrapper = function(...)
-            FHKEllesmereDB = FHKEllesmereDB or {}; FHKEllesmereDB.swingCursor = nil
+            if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end; FHKEllesmereDB.swingCursor = nil
             Apply(); return reset(...)
         end
         _G._EBS_ResetCursor = resetWrapper

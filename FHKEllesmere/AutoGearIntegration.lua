@@ -143,7 +143,7 @@ local function ReapplyWeights()
 end
 NS.SyncEllesmereAutoGearMode=ReapplyWeights
 function NS.SetEllesmereAutoGearMode(mode)
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     FHKEllesmereDB.autoGearMode=(mode=='levelling' or mode=='endgame') and mode or nil
     ReapplyWeights()
     if _G.EllesmereUI and _G.EllesmereUI.RefreshPage then _G.EllesmereUI:RefreshPage(true) end

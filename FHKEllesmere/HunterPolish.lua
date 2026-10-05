@@ -164,8 +164,15 @@ local function KeyboardFirst(command)
     end
     return first
 end
+-- On by default only alongside ForeverHunterKeys (publishing rule: never change someone else's
+-- look unasked); anyone can switch it on.
+function NS.EllesmereKeyboardLabelsOn()
+    local v=type(FHKEllesmereDB)=='table' and FHKEllesmereDB.keyboardKeyLabels
+    if v==nil then return _G.ForeverHunterKeysNS~=nil end
+    return v~=false
+end
 function NS.RelabelEllesmereBar(barKey)
-    if FHKEllesmereDB and FHKEllesmereDB.keyboardKeyLabels==false then return end
+    if not NS.EllesmereKeyboardLabelsOn() then return end
     local ns=EUI._ModuleNS and EUI._ModuleNS.EllesmereUIActionBars
     local prefix=COMMANDS[barKey]
     local buttons=ns and ns.barButtons and ns.barButtons[barKey]

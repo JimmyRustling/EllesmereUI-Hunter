@@ -8,7 +8,7 @@ local function Public(v) return not (issecretvalue and issecretvalue(v)) end
 local function ProfileName() return EllesmereUIDB and EllesmereUIDB.activeProfile or 'Default' end
 local function State(write)
     if write then
-        FHKEllesmereDB=FHKEllesmereDB or {};FHKEllesmereDB.classHUD=FHKEllesmereDB.classHUD or {}
+        if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end;FHKEllesmereDB.classHUD=FHKEllesmereDB.classHUD or {}
         local states=FHKEllesmereDB.classHUD;local key=ProfileName()
         states[key]=states[key] or {};return states[key]
     end

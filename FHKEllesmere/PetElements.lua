@@ -316,7 +316,7 @@ function NS.SyncEllesmerePetElements()
 end
 function P.State() return {root=root,target=target,xp=xp,cells=cells,host=host,driver=driver,enabled=enabled,pending=pending,canCleanse=canCleanse} end
 function NS.AddEllesmerePetElementOptions(Row)
-    local labels={'Pet Auras','Pet Target','Pet Buffs','Pet Debuffs','Mend Pet Cleanse Edge','Pet Aura Size','Pet Aura Slots','Pet Aura Vertical Offset','Pet Target Width','Pet Target Height','Pet Target Gap','Pet XP Bar','Pet XP Height','Pet XP Vertical Offset'}
+    local labels={'Pet Auras','Pet Target','Pet Buffs','Pet Debuffs','Mend Pet Cleanse Edge','Pet XP Bar'}
     if EUI.IsSearchPrebuild and EUI.IsSearchPrebuild() then
         for i=1,#labels,2 do Row({type='label',text=labels[i]},labels[i+1] and {type='label',text=labels[i+1]} or EUI.BlankRowCfg()) end
         return
@@ -336,13 +336,22 @@ function NS.AddEllesmerePetElementOptions(Row)
     local function NoAuras() return not Settings().auras end
     local function NoTarget() return not Settings().target end
     local function NoXP() return not Settings().xp end
-    Row(Toggle('Pet Auras','auras'),Toggle('Pet Target','target'))
+    -- Ellesmere's row tools: sizes in the cog, offsets behind the move arrows.
+    local function Pop(label,k)
+        return {type='slider',label=label,min=limits[k][1],max=limits[k][2],step=1,get=function() return Settings()[k] end,set=function(v) Set(k,v) end}
+    end
+    local auras=Toggle('Pet Auras','auras')
+    auras.cog={title='Pet Auras',rows={Pop('Icon Size','size'),Pop('Slots','count')},disabled=NoAuras,disabledTooltip='Pet Auras'}
+    auras.move={title='Pet Auras Position',rows={Pop('Vertical Offset','auraY')},disabled=NoAuras,disabledTooltip='Pet Auras'}
+    local target=Toggle('Pet Target','target')
+    target.cog={title='Pet Target',rows={Pop('Width','targetWidth'),Pop('Height','targetHeight')},disabled=NoTarget,disabledTooltip='Pet Target'}
+    target.move={title='Pet Target Position',rows={Pop('Gap','targetGap')},disabled=NoTarget,disabledTooltip='Pet Target'}
+    local xpBar=Toggle('Pet XP Bar','xp')
+    xpBar.cog={title='Pet XP Bar',rows={Pop('Height','xpHeight')},disabled=NoXP,disabledTooltip='Pet XP Bar'}
+    xpBar.move={title='Pet XP Bar Position',rows={Pop('Vertical Offset','xpY')},disabled=NoXP,disabledTooltip='Pet XP Bar'}
+    Row(auras,target)
     Row(Toggle('Pet Buffs','buffs',NoAuras),Toggle('Pet Debuffs','debuffs',NoAuras))
-    Row(Toggle('Mend Pet Cleanse Edge','dispel',NoAuras),Slider('Pet Aura Size','size',NoAuras))
-    Row(Slider('Pet Aura Slots','count',NoAuras),Slider('Pet Aura Vertical Offset','auraY',NoAuras))
-    Row(Slider('Pet Target Width','targetWidth',NoTarget),Slider('Pet Target Height','targetHeight',NoTarget))
-    Row(Slider('Pet Target Gap','targetGap',NoTarget),Toggle('Pet XP Bar','xp'))
-    Row(Slider('Pet XP Height','xpHeight',NoXP),Slider('Pet XP Vertical Offset','xpY',NoXP))
+    Row(Toggle('Mend Pet Cleanse Edge','dispel',NoAuras),xpBar)
     Row({type='label',text=host and 'Attached To Pet Frame' or 'Pet Frame Not Found'},EUI.BlankRowCfg())
 end
 driver:SetScript('OnEvent',P.OnEvent);driver:RegisterEvent('PLAYER_LOGIN')

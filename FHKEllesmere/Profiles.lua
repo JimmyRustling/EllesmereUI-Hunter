@@ -18,7 +18,7 @@ for _, key in ipairs({
     'rarityIconPosition', 'raritySkulls', 'rarityQuestCount',
     -- colours and bars
     'damageTrails', 'healthBarColors', 'resourceBarColors', 'healthTextColors', 'resourceTextColors',
-    'petHappinessColors', 'petMoodIcon', 'petMoodStyle', 'petMoodStrip', 'petMoodHideHappy', 'resourceBarZones', 'alignPowerText', 'statusIconBadge', 'darkHealthLine', 'fleeTick', 'aggroPlates', 'petAggroPlates', 'combatFadeGuides', 'totOnYou', 'extraCombatIcons', 'petCombatIcon', 'combatIconStyle', 'lootInHealthText',
+    'petHappinessColors', 'petMoodIcon', 'petMoodStyle', 'petMoodStrip', 'petMoodHideHappy', 'resourceBarZones', 'alignPowerText', 'statusIconBadge', 'darkHealthLine', 'fleeTick', 'aggroPlates', 'petAggroPlates', 'combatFadeGuides', 'totOnYou', 'extraCombatIcons', 'petCombatIcon', 'petCombatSize', 'petCombatX', 'petCombatY', 'combatBlockSize', 'combatIconStyle', 'lootInHealthText',
     'vividCueText', 'vividBarFills', 'pixelIconEdges', 'pixelBarSeparators',
     -- warnings, XP, press feedback, swing cursor
     'warnings', 'xpBar', 'actionPress', 'swingCursor', 'reduceMotion', 'chromeVisibility', 'chatQuiet', 'keyboardKeyLabels', 'autoGearMode', 'aspectAdvisor', 'petElements', 'petFood', 'hunterCues', 'levelingQoL', 'hunterColors', 'cdmLabels',
@@ -144,7 +144,7 @@ local RESET_KEYS = {
         'rarityIcons', 'rarityMarkerStyle', 'rarityIconSize', 'rarityIconPosition', 'raritySkulls', 'rarityQuestCount',
         'aggroPlates', 'petAggroPlates', {'indicators', 'plate'}, {'damageTrails', 'nameplates'}},
     EllesmereUIUnitFrames = {'aspectAdvisor', 'petElements', 'petFood', 'healthBarColors', 'healthTextColors', 'resourceTextColors', 'petHappinessColors', 'petMoodIcon', 'petMoodStyle', 'petMoodHideHappy',
-        'petMoodStrip', 'alignPowerText', 'statusIconBadge', 'darkHealthLine', 'fleeTick', 'totOnYou', 'petCombatIcon', 'combatIconStyle', 'lootInHealthText', {'indicators', 'frame'}, {'damageTrails', 'unitframes'}},
+        'petMoodStrip', 'alignPowerText', 'statusIconBadge', 'darkHealthLine', 'fleeTick', 'totOnYou', 'petCombatIcon', 'combatIconStyle', 'petCombatSize', 'petCombatX', 'petCombatY', 'combatBlockSize', 'lootInHealthText', {'indicators', 'frame'}, {'damageTrails', 'unitframes'}},
     EllesmereUIResourceBars = {'resourceBarZones', 'resourceBarColors', 'attackPulses', 'attackCueSize',
         {'indicators', 'range'}, {'indicators', 'attacks'}, 'point', 'relPoint', 'x', 'y'},
     EllesmereUIActionBars = {'xpBar', 'actionPress', 'chromeVisibility', 'keyboardKeyLabels'},
@@ -204,7 +204,7 @@ driver:RegisterEvent('ADDON_LOADED'); driver:RegisterEvent('PLAYER_LOGIN'); driv
 driver:SetScript('OnEvent', function(_, event, name)
     if event == 'ADDON_LOADED' then
         if name ~= addon then return end
-        FHKEllesmereDB = FHKEllesmereDB or {}
+        if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
         Attach(FHKEllesmereDB); Hook()
     elseif event == 'PLAYER_LOGIN' then
         CheckSwitch()

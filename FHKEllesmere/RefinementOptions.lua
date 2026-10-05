@@ -5,7 +5,7 @@ if not EUI or not NS or EUI_CLIENT_BLOCKED then return end
 if type(ADDON) ~= 'string' then ADDON = 'FHKEllesmere' end
 local driver = CreateFrame('Frame')
 local wrapped = setmetatable({}, {__mode='k'})
-local function DB() FHKEllesmereDB = FHKEllesmereDB or {}; return FHKEllesmereDB end
+local function DB() if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end; return FHKEllesmereDB end
 local function Toggle(text, key, inverted)
     return {type='toggle',text=text,getValue=function()
         return inverted and DB()[key] == true or not inverted and DB()[key] ~= false
@@ -34,6 +34,103 @@ local function Shared(cfg, other)
 end
 -- Renders one companion section with native widgets. Fine-tuning rows are tagged
 -- 'advanced' and stay hidden until the player asks for them (audit F47).
+-- Player report: switching a toggle on (Aspect Element, Pet Auras) left the options under
+-- it greyed out until the tab was changed. Ellesmere's own rows call RefreshPage after a
+-- change, which re-reads every row's value and disabled state in place; every companion
+-- toggle, dropdown and button now does the same.
+local LIVE={toggle=true,checkbox=true,dropdown=true}
+local function Live(cfg)
+    if type(cfg)~='table' or cfg.fhkLive then return cfg end
+    local key=LIVE[cfg.type] and 'setValue' or cfg.type=='button' and 'onClick' or nil
+    local fn=key and cfg[key]
+    if type(fn)~='function' then return cfg end
+    cfg[key]=function(...)
+        local a,b=fn(...)
+        if EUI.RefreshPage then pcall(EUI.RefreshPage,EUI) end
+        return a,b
+    end
+    cfg.fhkLive=true
+    return cfg
+end
+NS.EllesmereLiveRow=Live
+-- Ellesmere's inline row tools (player: "ellesmere uses cogs for settings, multidirectional
+-- arrows for text size, an eye for previews; get those into our UI"). A row half may carry:
+--   swatches = {{tooltip,getValue,setValue,hasAlpha}, ...}  inline colour swatches
+--   move     = {title, rows={cog rows}}  position cog with Ellesmere's directions icon
+--   cog      = {title, rows={cog rows}}  settings cog
+--   preview  = {tip, show=fn(), hide=fn() or duration}  eye that previews the element
+-- They are built in Ellesmere's order (swatches, then move/cog, then the eye, each further
+-- left), share the half's disabled state and explain it the same way. Cog rows use the native
+-- popup ({type='slider'|'toggle'|'dropdown'|'colorpicker', label, get, set, ...}).
+local function Eye(region,cfg)
+    local p=cfg.preview
+    local visible,invisible=EUI.EYE_VISIBLE_ICON,EUI.EYE_INVISIBLE_ICON
+    if not (visible and invisible) then return end
+    local off=type(p.disabled)=='function' and p.disabled or type(cfg.disabled)=='function' and cfg.disabled or nil
+    local tip=p.disabledTooltip or cfg.disabledTooltip
+    local shown,token=false,0
+    local btn=CreateFrame('Button',nil,region)
+    btn:SetSize(26,26)
+    btn:SetPoint('RIGHT',region._lastInline or region._control or region,'LEFT',-8,0)
+    region._lastInline=btn
+    btn:SetFrameLevel(region:GetFrameLevel()+5)
+    local tex=btn:CreateTexture(nil,'OVERLAY');tex:SetAllPoints()
+    local function Paint()
+        tex:SetTexture(shown and invisible or visible)
+        btn:SetAlpha(off and off() and .15 or (btn:IsMouseOver() and .7 or .4))
+    end
+    local function Set(on)
+        shown=on;token=token+1;Paint()
+        if on then
+            if p.show then pcall(p.show) end
+            -- A one-shot preview flips back by itself.
+            if not p.hide and C_Timer and C_Timer.After then
+                local mine=token
+                C_Timer.After(p.duration or 3,function() if mine==token then shown=false;Paint() end end)
+            end
+        elseif p.hide then pcall(p.hide) end
+    end
+    btn:SetScript('OnEnter',function(self) self:SetAlpha(.7);if EUI.ShowWidgetTooltip then EUI.ShowWidgetTooltip(self,p.tip or 'Preview') end end)
+    btn:SetScript('OnLeave',function() if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end;Paint() end)
+    btn:SetScript('OnClick',function() Set(not shown) end)
+    local block=CreateFrame('Frame',nil,btn);block:SetAllPoints();block:SetFrameLevel(btn:GetFrameLevel()+10);block:EnableMouse(true)
+    block:SetScript('OnEnter',function()
+        if EUI.ShowWidgetTooltip and tip then EUI.ShowWidgetTooltip(btn,EUI.DisabledTooltip and EUI.DisabledTooltip(tip) or tip) end
+    end)
+    block:SetScript('OnLeave',function() if EUI.HideWidgetTooltip then EUI.HideWidgetTooltip() end end)
+    local function Refresh()
+        local disabled=off and off() or false
+        block:SetShown(disabled)
+        if disabled and shown then Set(false) end
+        Paint()
+    end
+    Refresh()
+    if EUI.RegisterWidgetRefresh then EUI.RegisterWidgetRefresh(Refresh) end
+    return btn
+end
+local function Extras(row,side,cfg)
+    if type(cfg)~='table' or not (cfg.swatches or cfg.move or cfg.cog or cfg.preview) then return end
+    if EUI._prebuilding or type(row)~='table' then return end
+    local region=row[side]
+    if type(region)~='table' then return end
+    local disabled,tip=cfg.disabled,cfg.disabledTooltip
+    if cfg.swatches and EUI.BuildInlineSwatches then
+        pcall(EUI.BuildInlineSwatches,region,cfg.swatches,{disabled=disabled,disabledTooltip=tip})
+    end
+    for _,kind in ipairs({'move','cog'}) do
+        local o=cfg[kind]
+        if type(o)=='table' and EUI.BuildInlineCog then
+            local spec={}
+            for k,x in pairs(o) do spec[k]=x end
+            if kind=='move' then spec.icon=EUI.DIRECTIONS_ICON;spec.gap=9 end
+            spec.disabled=spec.disabled or disabled
+            if spec.disabled then spec.disabledTooltip=spec.disabledTooltip or tip or cfg.text end
+            pcall(EUI.BuildInlineCog,region,spec)
+        end
+    end
+    if type(cfg.preview)=='table' then pcall(Eye,region,cfg) end
+end
+NS.EllesmereRowExtras=Extras
 local function RenderSection(W, header, parent, v, y)
     -- The header waits for the first row, so a section with nothing to show
     -- (AutoGear not installed, for example) leaves no empty title behind.
@@ -47,7 +144,8 @@ local function RenderSection(W, header, parent, v, y)
     v.builder(function(left,right,advanced)
         if advanced and not ShowAdvanced() then hidden=hidden+1;return nil end
         Title()
-        local row,height=W:DualRow(parent,y,left,right); y=y-height
+        local row,height=W:DualRow(parent,y,Live(left),Live(right)); y=y-height
+        Extras(row,'_leftRegion',left);Extras(row,'_rightRegion',right)
         return row
     end)
     if hidden>0 then
@@ -251,11 +349,19 @@ local function WrapResets()
         end
     end
 end
+-- Owner-only presets (player: "those come from our helper app and are specific to me; we
+-- shouldn't be overwriting others' settings, keybinds, macros"): anything that writes key
+-- bindings, macros or another module's settings to the owner's taste is shown only alongside
+-- ForeverHunterKeys. Everyone else gets the companion's own features with their defaults.
+local function Owner() return _G.ForeverHunterKeysNS~=nil end
+NS.EllesmereOwnerInstall=Owner
 local function Install()
     WrapResets()
-    Append(EUI.GLOBAL_KEY or '_EUIGlobal','REVIEWED HUNTER CUES',function(Row)
-        if NS.AddEllesmereReviewedProfileOptions then NS.AddEllesmereReviewedProfileOptions(Row) end
-    end,'General')
+    if Owner() then
+        Append(EUI.GLOBAL_KEY or '_EUIGlobal','REVIEWED HUNTER CUES',function(Row)
+            if NS.AddEllesmereReviewedProfileOptions then NS.AddEllesmereReviewedProfileOptions(Row) end
+        end,'General')
+    end
     Append(EUI.GLOBAL_KEY or '_EUIGlobal','FOREVER THEME PRESETS',function(Row)
         if NS.AddEllesmereThemeOptions then NS.AddEllesmereThemeOptions(Row) end
     end,'Style') -- with Ellesmere's own look choices (player request)
@@ -285,9 +391,10 @@ local function Install()
             order={'inrange','approaching','deadzone','melee','out','unknown','warnings','history'},
             tooltip='Shows the same fixed state every time for about ten seconds, to compare styles. /fhkpreview <name> also works.',
             getValue=function() return lastScenario end,
-            setValue=function(v) lastScenario=v;if NS.SetEllesmerePreviewScenario then NS.SetEllesmerePreviewScenario(v) end end},
-            {type='button',text='Preview Again',onClick=function()
-                if NS.SetEllesmerePreviewScenario then NS.SetEllesmerePreviewScenario(lastScenario) end end})
+            setValue=function(v) lastScenario=v;if NS.SetEllesmerePreviewScenario then NS.SetEllesmerePreviewScenario(v) end end,
+            preview={tip='Preview this scenario again',duration=10,show=function()
+                if NS.SetEllesmerePreviewScenario then NS.SetEllesmerePreviewScenario(lastScenario) end end}},
+            {type='label',text='The eye shows it again'})
     end,'General')
     -- Settings live where the task is (audit F08): class resources with Resource Bars,
     -- XP with the native XP page, press feedback with bar animations.
@@ -311,7 +418,14 @@ local function Install()
             if EUI.RefreshPage then EUI:RefreshPage() end
         end}
     end
-    NS.EllesmereColorRow,NS.EllesmereResetColors=ColorRow,ResetColors
+    -- The same token as an inline swatch (row tools) or a multiSwatch entry.
+    local function ColorSwatch(key,tip)
+        local row=ColorRow(key,tip,tip)
+        return {tooltip=tip,hasAlpha=false,getValue=row.getValue,setValue=row.setValue}
+    end
+    NS.EllesmereColorRow,NS.EllesmereResetColors,NS.EllesmereColorSwatch=ColorRow,ResetColors,ColorSwatch
+    -- A toggle with its colours as inline swatches (Ellesmere's row tools).
+    local function With(cfg,...) cfg.swatches={...};return cfg end
     Append('EllesmereUIResourceBars','FOREVER CLASS HUD',function(Row)
         if NS.AddEllesmereClassHUDOptions then NS.AddEllesmereClassHUDOptions(Row) end
         -- Class setup by goal (audit F24): each button opens the existing tool for it.
@@ -327,21 +441,37 @@ local function Install()
             Row(Go('Hunter Warnings','EllesmereUIQoL','QoL'),Go('Swing Timer And Weaving','EllesmereUIResourceBars','Swing Timer'))
         end
     end,'Class, Power and Health Bars')
-    Append('EllesmereUIActionBars','HUNTER KEYBOARD LAYOUT',function(Row)
+    local function KeyLabels()
+        return {type='toggle',text='Keyboard-First Key Labels',
+            tooltip='A button bound to a keyboard key and a Naga button shows the keyboard key (SG, not SF12); Insert and Delete shorten to Ins and Del. Bindings are unchanged.',
+            getValue=function() return NS.EllesmereKeyboardLabelsOn and NS.EllesmereKeyboardLabelsOn() or false end,
+            setValue=function(v)
+                DB().keyboardKeyLabels=v
+                local eab=EUI._ModuleNS.EllesmereUIActionBars and EUI._ModuleNS.EllesmereUIActionBars.EAB
+                if eab and eab.ApplyFonts then eab:ApplyFonts() end
+            end}
+    end
+    local function MenuVisibility()
+        return {type='dropdown',text='Menu And Bags Visibility',
+            values={native='Native Settings',mouseover='Show On Hover',combat_hover='Combat Or Hover'},
+            order={'mouseover','combat_hover','native'},
+            tooltip='Show On Hover hides the menu and bag bar, including the keyring, until hovered in or out of combat. Combat Or Hover also shows them automatically in combat. Native Settings restores this profile\'s captured visibility.',
+            getValue=function() return NS.EllesmereChromeVisibility and NS.EllesmereChromeVisibility() or 'native' end,
+            setValue=function(v) if NS.SetEllesmereChromeVisibility then NS.SetEllesmereChromeVisibility(v) end end}
+    end
+    if not Owner() then
+        -- Published install: the display options only; no layout, polish or key/macro presets.
+        Append('EllesmereUIActionBars','KEY LABELS AND MENU',function(Row)
+            Row(KeyLabels(),MenuVisibility())
+        end)
+    end
+    if Owner() then Append('EllesmereUIActionBars','HUNTER KEYBOARD LAYOUT',function(Row)
         Row({type='button',text='Apply Hunter Layout',onClick=function()
             if NS.ApplyEllesmereHunterLayout then NS.ApplyEllesmereHunterLayout() end
         end},{type='button',text='Apply Hunter Polish',onClick=function()
             if NS.ApplyEllesmereHunterPolish then NS.ApplyEllesmereHunterPolish() end
         end})
-        Row({type='toggle',text='Keyboard-First Key Labels',
-            tooltip='A button bound to a keyboard key and a Naga button shows the keyboard key (SG, not SF12); Insert and Delete shorten to Ins and Del. Bindings are unchanged.',
-            getValue=function() return FHKEllesmereDB.keyboardKeyLabels~=false end,
-            setValue=function(v)
-                FHKEllesmereDB.keyboardKeyLabels=v
-                local eab=EUI._ModuleNS.EllesmereUIActionBars and EUI._ModuleNS.EllesmereUIActionBars.EAB
-                if eab and eab.ApplyFonts then eab:ApplyFonts() end
-            end},
-            {type='label',text='Polish: Cooldown Manager icon trim, softer keybind text'})
+        Row(KeyLabels(),{type='label',text='Polish: Cooldown Manager icon trim, softer keybind text'})
         Row({type='button',text='Undo Hunter Layout',onClick=function()
             if NS.UndoEllesmereHunterLayout and NS.UndoEllesmereHunterLayout() and EUI.RefreshPage then EUI:RefreshPage() end
         end,disabled=function() return not (NS.CanUndoEllesmereHunterLayout and NS.CanUndoEllesmereHunterLayout()) end,
@@ -356,19 +486,13 @@ local function Install()
             getValue=function() return NS.EllesmereIdleWingsEnabled and NS.EllesmereIdleWingsEnabled() or false end,
             setValue=function(v) if NS.ApplyEllesmereIdleWings then NS.ApplyEllesmereIdleWings(v) end end},
             {type='label',text='Uses native visibility; center combat rows stay visible'})
-        Row({type='dropdown',text='Menu And Bags Visibility',
-            values={native='Native Settings',mouseover='Show On Hover',combat_hover='Combat Or Hover'},
-            order={'mouseover','combat_hover','native'},
-            tooltip='Show On Hover hides the menu and bag bar, including the keyring, until hovered in or out of combat. Combat Or Hover also shows them automatically in combat. Native Settings restores this profile\'s captured visibility.',
-            getValue=function() return NS.EllesmereChromeVisibility and NS.EllesmereChromeVisibility() or 'native' end,
-            setValue=function(v) if NS.SetEllesmereChromeVisibility then NS.SetEllesmereChromeVisibility(v) end end},
-            {type='label',text='Changes made in combat apply when it ends'})
+        Row(MenuVisibility(),{type='label',text='Changes made in combat apply when it ends'})
         Row({type='toggle',text='Guide Quest Bar (Bar 8)',
             tooltip='Keeps RestedXP targeting and the guide items on bar 8: U targets; Shift-U, I and Ctrl+Naga 12 use the active item. Keys you rebind yourself are left alone. Off restores your previous keys and RestedXP\'s own item panel.',
             getValue=function() local v=DB().questBar;if v==nil then return (_G.ForeverHunterKeysNS~=nil) end;return v~=false end,
             setValue=function(v) if NS.SetEllesmereQuestBarEnabled then NS.SetEllesmereQuestBarEnabled(v) end end},
             {type='label',text='/fhkquestbar lists the keys it owns'})
-    end)
+    end) end
     Append('EllesmereUIActionBars','XP BAR REFINEMENTS',function(Row)
         if NS.AddEllesmereXPBarOptions then NS.AddEllesmereXPBarOptions(Row) end
     end,'Menu, Bags & XP Bars')
@@ -385,19 +509,17 @@ local function Install()
         if NS.AddEllesmerePetFoodOptions then NS.AddEllesmerePetFoodOptions(Row) end
     end)
     Append('EllesmereUIUnitFrames','COLOUR AND TEXT REFINEMENTS',function(Row)
-        Row(Shared(Toggle('Health Bar Colors','healthBarColors'),'Nameplates'),Toggle('Resource Bar Colors','resourceBarColors'))
+        Row(With(Shared(Toggle('Health Bar Colors','healthBarColors'),'Nameplates'),ColorSwatch('healthMid','Health 50% Color'),
+            ColorSwatch('healthLow','Health 25% Color'),ColorSwatch('healthCritical','Health Critical Color')),Toggle('Resource Bar Colors','resourceBarColors'))
         Row(Toggle('Health Text Colors','healthTextColors'),Toggle('Resource Text Colors','resourceTextColors'))
-        Row(ColorRow('healthMid','Health 50% Color','Health fill at half health (Health Bar Colors).'),
-            ColorRow('healthLow','Health 25% Color','Health fill at a quarter health.'),true)
-        Row(ColorRow('healthCritical','Health Critical Color','Health fill near empty.'),
-            ResetColors({'healthMid','healthLow','healthCritical'},'Reset Health Colors'),true)
         Row({type='toggle',text='Pet Happiness Bar Color',tooltip='Off (default): the pet bar shows health like every bar and the happiness icon shows happiness. On: the pet fill uses the happiness color instead.',
             getValue=function() return FHKEllesmereDB.petHappinessColors==true end,
             setValue=function(v) FHKEllesmereDB.petHappinessColors=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
-            {type='toggle',text='Pet Happiness Icon',tooltip='Shows pet happiness as a small block with a black outline: green happy, gold content, red unhappy. Off restores the stock face.',
+            With({type='toggle',text='Pet Happiness Icon',tooltip='Shows pet happiness as a small block with a black outline: green happy, gold content, red unhappy. Off restores the stock face.',
             getValue=function() return FHKEllesmereDB.petMoodIcon~=false end,
-            setValue=function(v) FHKEllesmereDB.petMoodIcon=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end})
-        Row({type='label',text='Health color warns, resources dim; dark mode: text warns'},
+            setValue=function(v) FHKEllesmereDB.petMoodIcon=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
+            ColorSwatch('happy','Happy Color'),ColorSwatch('content','Content Color'),ColorSwatch('unhappy','Unhappy Color')))
+        Row(ResetColors({'healthMid','healthLow','healthCritical','happy','content','unhappy'},'Reset Health And Happiness Colors'),
             {type='dropdown',text='Pet Happiness Style',values={square='Square',paw='Paw'},order={'square','paw'},
             tooltip='Square: a flat colored block. Paw: the tinted paw icon.',
             getValue=function() return FHKEllesmereDB.petMoodStyle=='paw' and 'paw' or 'square' end,
@@ -406,10 +528,6 @@ local function Install()
             getValue=function() return FHKEllesmereDB.petMoodHideHappy==true end,
             setValue=function(v) FHKEllesmereDB.petMoodHideHappy=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
             {type='label',text='Green means nothing to do, so it can go'},true)
-        Row(ColorRow('happy','Happy Color','Pet happiness icon, strip and bar color when happy.'),
-            ColorRow('content','Content Color','Pet happiness color when content.'),true)
-        Row(ColorRow('unhappy','Unhappy Color','Pet happiness color when unhappy.'),
-            ResetColors({'happy','content','unhappy'},'Reset Happiness Colors'),true)
         if NS.EllesmerePetMoodSettings then
             local m=NS.EllesmerePetMoodSettings()
             local function Set(key,v)
@@ -504,14 +622,27 @@ local function Install()
             getValue=function() return DB().lootInHealthText~=false end,
             setValue=function(v) DB().lootInHealthText=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
             {type='label',text='Uses the Loot Icons setting under Nameplates'})
-        Row({type='toggle',text='Pet Combat Icon',
+        -- Size and position (player: "anything that allows us to move the combat indicators?").
+        -- The player frame's own indicator moves with Ellesmere's native combat indicator options.
+        local function Num(label,key,default,min,max)
+            return {type='slider',label=label,min=min,max=max,step=1,get=function() local v=DB()[key];return type(v)=='number' and v or default end,
+                set=function(v) DB()[key]=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end}
+        end
+        local petOff=function() return DB().petCombatIcon==false end
+        local petCombat={type='toggle',text='Pet Combat Icon',
             tooltip='Shows the combat icon beside your pet frame while your pet is in combat, matching the player frame icon.',
             getValue=function() return DB().petCombatIcon~=false end,
-            setValue=function(v) DB().petCombatIcon=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
-            {type='dropdown',text='Combat Icon Style',values={block='White Block',native='Ellesmere Icon'},order={'block','native'},
-            tooltip='White Block: a small white square with a black outline on the player and pet frames while in combat. Ellesmere Icon: the style chosen in the Unit Frames combat indicator options.',
+            setValue=function(v) DB().petCombatIcon=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end}
+        petCombat.cog={title='Pet Combat Icon',disabled=petOff,disabledTooltip='Pet Combat Icon',rows={Num('Size','petCombatSize',16,8,32)}}
+        petCombat.move={title='Pet Combat Icon Position',disabled=petOff,disabledTooltip='Pet Combat Icon',
+            rows={Num('X Offset','petCombatX',-4,-200,200),Num('Y Offset','petCombatY',0,-200,200)}}
+        local style={type='dropdown',text='Combat Icon Style',values={block='White Block',native='Ellesmere Icon'},order={'block','native'},
+            tooltip='White Block: a small white square with a black outline on the player and pet frames while in combat. Ellesmere Icon: the style chosen in the Unit Frames combat indicator options, which also move the player icon.',
             getValue=function() return DB().combatIconStyle=='native' and 'native' or 'block' end,
-            setValue=function(v) DB().combatIconStyle=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end})
+            setValue=function(v) DB().combatIconStyle=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end}
+        style.cog={title='White Block',disabled=function() return DB().combatIconStyle=='native' end,disabledTooltip='Combat Icon Style: White Block',
+            rows={Num('Block Size','combatBlockSize',12,6,24)}}
+        Row(petCombat,style)
         Row({type='toggle',text='Gold Target of Target on You',
             tooltip='When your target is attacking you, the target of target bar turns WoW gold, the same act-now color as the gold nameplate edge. On your pet it shows pet green.',
             getValue=function() return DB().totOnYou~=false end,
@@ -522,7 +653,8 @@ local function Install()
             {type='label',text='Gold: on you; green: on your pet'})
         if NS.AddEllesmereDamageTrailOptions then NS.AddEllesmereDamageTrailOptions(Row,'unitframes') end
     end)
-    Append('EllesmereUIUnitFrames','COMBAT LAYOUT',function(Row)
+    -- The owner's frame and bar arrangement: owner install only (publishing rule).
+    if Owner() then Append('EllesmereUIUnitFrames','COMBAT LAYOUT',function(Row)
         Row({type='button',text='Apply Combat Layout',
             tooltip='Places the cooldown rows around the swing bar, player and target beside it, pet and target of target under them, side action bars on hover, and fades guides in combat. Undo restores every value it changed.',
             onClick=function()
@@ -538,7 +670,7 @@ local function Install()
             disabledTooltip='Nothing to undo'})
         Row({type='label',text='Add your shots to the Cooldown Manager Essential row to fill it'},
             {type='label',text='/fhklayout and /fhklayout undo do the same'})
-    end)
+    end) end
     Append('EllesmereUIUnitFrames','RANGE BAR',function(Row)
         if NS.AddEllesmereIndicatorOptions then NS.AddEllesmereIndicatorOptions(Row,'frame') end
     end)
@@ -572,27 +704,26 @@ local function Install()
             setValue=function(v) DB().extraCombatIcons=v end},
             {type='label',text='Off: one combat icon, on the player frame'})
         Row(Toggle('Skinning Icons','skinCues'),{type='label',text='White: ready; translucent grey: unavailable'})
-        Row({type='toggle',text='Gold Edge When Attacking You',
+        Row(With({type='toggle',text='Gold Edge When Attacking You',
             tooltip='In combat, an enemy whose target is you, not your pet, gets a thin gold edge on its nameplate.',
             getValue=function() return DB().aggroPlates~=false end,
             setValue=function(v) DB().aggroPlates=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
+            ColorSwatch('aggroYou','On You Edge Color')),
             {type='label',text='Gold means act now: Feign Death or let the pet take it back'})
-        Row({type='toggle',text='Green Edge When Attacking Your Pet',
+        Row(With({type='toggle',text='Green Edge When Attacking Your Pet',
             tooltip='In combat, an enemy whose target is your pet gets a thin pet-green edge: gold is you, green is your pet, no edge is someone else.',
             getValue=function() return DB().petAggroPlates==true end,
             setValue=function(v) DB().petAggroPlates=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
-            {type='label',text='Shows which mobs your pet is holding'})
-        Row(ColorRow('aggroYou','On You Edge Color','Edge on an enemy attacking you.'),
-            ColorRow('aggroPet','On Pet Edge Color','Edge on an enemy attacking your pet.'))
-        Row({type='toggle',text='Smooth Cue Fades',tooltip='Smooth corpse readiness and range fades on guide, rarity and raid markers. Whole-nameplate opacity uses Opacity Priority when enabled, otherwise native settings.',
+            ColorSwatch('aggroPet','On Pet Edge Color')),
+            ResetColors({'aggroYou','aggroPet'},'Reset Edge Colors'))
+        local fades={type='toggle',text='Smooth Cue Fades',tooltip='Smooth corpse readiness and range fades on guide, rarity and raid markers. Whole-nameplate opacity uses Opacity Priority when enabled, otherwise native settings.',
             getValue=function() return DB().cueFades==true end,
-            setValue=function(v) DB().cueFades=v;NS.SyncEllesmereCueFades() end},
-            {type='slider',text='Marker Out of Range Opacity',min=0,max=100,step=5,
+            setValue=function(v) DB().cueFades=v;NS.SyncEllesmereCueFades() end}
+        fades.cog={title='Cue Fades',disabled=function() return DB().cueFades~=true end,disabledTooltip='Smooth Cue Fades',rows={
+            {type='slider',label='Marker Out Of Range %',min=0,max=100,step=5,
                 tooltip='Extra marker opacity, multiplied by the nameplate\'s opacity. Use /fhkopacity while hovering a plate to see the active layers.',
-                disabled=function() return DB().cueFades~=true end,
-                disabledTooltip='Enable Smooth Cue Fades',
-                getValue=function() return (DB().cueOutAlpha or .28)*100 end,
-                setValue=function(v) DB().cueOutAlpha=v/100;NS.SyncEllesmereCueFades() end})
+                get=function() return (DB().cueOutAlpha or .28)*100 end,set=function(v) DB().cueOutAlpha=v/100;NS.SyncEllesmereCueFades() end}}}
+        Row(fades,{type='label',text='Fades guide, rarity and raid markers with range'})
         if NS.AddEllesmereDamageTrailOptions then NS.AddEllesmereDamageTrailOptions(Row,'nameplates') end
     end)
     Append('EllesmereUINameplates','NAMEPLATE OPACITY PRIORITY',function(Row)
@@ -602,20 +733,18 @@ local function Install()
         if NS.AddEllesmereIndicatorOptions then NS.AddEllesmereIndicatorOptions(Row,'plate') end
     end,'Display')
     Append('EllesmereUINameplates','MOB RARITY',function(Row)
-        Row(Toggle('Elite / Rare Level Markers','rarityMarkers'),Toggle('Gold / Silver Level Colors','rarityLevelColours'))
-        Row(Toggle('Native Elite / Rare Badges','rarityIcons'),
-            {type='slider',text='Rarity Badge Size',min=10,max=24,step=1,
-                getValue=function() return DB().rarityIconSize or 16 end,
-                setValue=function(v) DB().rarityIconSize=v; if NS.RefreshEllesmereRarity then NS.RefreshEllesmereRarity() end end})
-        Row({type='label',text='Gold: elite / boss; silver: rare / rare elite'},
-            {type='label',text='Disable colors to use native level difficulty colors'})
-        Row(ColorRow('rarityElite','Elite Level Color','Elite and boss level text and level box.'),
-            ColorRow('rarityRare','Rare Level Color','Rare and rare elite level text and level box.'))
-        Row(ColorRow('quest','Quest Count Color','The quest objective count beside the bar corner.'),
+        local badges=Toggle('Native Elite / Rare Badges','rarityIcons')
+        badges.cog={title='Rarity Badges',disabled=function() return DB().rarityIcons==false end,disabledTooltip='Native Elite / Rare Badges',rows={
+            {type='slider',label='Badge Size',min=10,max=24,step=1,get=function() return DB().rarityIconSize or 16 end,
+                set=function(v) DB().rarityIconSize=v; if NS.RefreshEllesmereRarity then NS.RefreshEllesmereRarity() end end}}}
+        Row(Toggle('Elite / Rare Level Markers','rarityMarkers'),
+            With(Toggle('Gold / Silver Level Colors','rarityLevelColours'),ColorSwatch('rarityElite','Elite Level Color'),ColorSwatch('rarityRare','Rare Level Color')))
+        Row(badges,{type='label',text='Gold: elite / boss; silver: rare / rare elite'})
+        Row({type='label',text='Disable colors to use native level difficulty colors'},
             ResetColors({'rarityElite','rarityRare','quest'},'Reset Rarity Colors'))
         Row(Toggle('Skull-Ranked Level Icon','raritySkulls'),
             {type='label',text='Uses the game\'s skull rank, not a fixed level gap'})
-        Row(Toggle('Quest Count Beside Bar Corner','rarityQuestCount'),
+        Row(With(Toggle('Quest Count Beside Bar Corner','rarityQuestCount'),ColorSwatch('quest','Quest Count Color')),
             {type='label',text='Quest yellow, clear of the mob name'})
         Row({type='dropdown',text='Rarity Badge Position',values={bottomleft='Below Left',topright='Beside Name'},order={'bottomleft','topright'},
             getValue=function() return DB().rarityIconPosition or 'bottomleft' end,
@@ -686,12 +815,13 @@ local function Install()
                     if NS.ApplyEllesmereHunterColours then NS.ApplyEllesmereHunterColours() end
                 end}
         end
-        Row(Swatch('shoot','Shooting Color','In shooting range, Auto Shot rings, bars and icons. Bars use a deeper shade.'),
-            Swatch('melee','Melee Color','In melee range, the melee swing and Melee Ready.'))
-        Row(Swatch('cast','Cast Color','Your casts: the cast ring and world cues.'),
-            Swatch('retry','Retry Color','Auto Shot retry: ring, icon and cue text.'))
-        Row(Swatch('danger','Danger Color','The dead zone and act-now warnings.'),
-            Swatch('caution','Caution Color','Approaching the dead zone, low ammo and other warnings.'))
+        local function Spec(key,text,tip) local c=Swatch(key,text,tip);return {tooltip=text..': '..tip,hasAlpha=false,getValue=c.getValue,setValue=c.setValue} end
+        -- One row of swatches, the native multiSwatch (Ellesmere's row tools).
+        Row({type='multiSwatch',text='Range And Attack Colors',tooltip='Shooting, melee, cast and retry: rings, bars, icons and cue text. Bars use a deeper shade.',
+            swatches={Spec('shoot','Shooting','in shooting range, Auto Shot rings, bars and icons'),Spec('melee','Melee','in melee range, the melee swing and Melee Ready'),
+                Spec('cast','Cast','your casts: the cast ring and world cues'),Spec('retry','Retry','Auto Shot retry: ring, icon and cue text')}},
+            {type='multiSwatch',text='Warning Colors',tooltip='Danger: the dead zone and act-now warnings. Caution: approaching the dead zone, low ammo and other warnings.',
+            swatches={Spec('danger','Danger','the dead zone and act-now warnings'),Spec('caution','Caution','approaching the dead zone, low ammo')}})
         Row({type='button',text='Reset Hunter Colors',onClick=function()
             FHKEllesmereDB.hunterColors=nil
             if NS.ApplyEllesmereHunterColours then NS.ApplyEllesmereHunterColours() end

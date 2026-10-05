@@ -12,7 +12,7 @@ local started, pending, hooked, configured, lastSignature, lastError
 local elapsed = 0
 
 local function DB()
-    FHKEllesmereDB = FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     return FHKEllesmereDB
 end
 -- RestedXP is read only through FHK's adapter (audit F39).
@@ -242,7 +242,7 @@ function FHK.SetEllesmereQuestBarEnabled(on)
     end
     db.questBar = on and true or false
     FHK.QuestBarOwnsCtrlNaga = db.questBar
-    if on then pending = true; return true end
+    if on then pending = true; if FHK.SyncEllesmereQuestBarPolling then FHK.SyncEllesmereQuestBarPolling() end; return true end
     local changed = false
     for key, command in pairs(db.questBarKeys or {}) do
         if GetBindingAction(key) == command then
@@ -279,17 +279,22 @@ end
 
 local events = CreateFrame('Frame')
 for _, event in ipairs({'PLAYER_ENTERING_WORLD', 'PLAYER_REGEN_ENABLED', 'UPDATE_MACROS', 'BAG_UPDATE_DELAYED'}) do events:RegisterEvent(event) end
+-- The half-second poll runs only while the quest bar is on (performance review: it used to
+-- tick every frame on installs that never use it).
+local function Poll(_, dt)
+    if not started or not Enabled() then events:SetScript('OnUpdate', nil); return end
+    elapsed = elapsed + dt; if elapsed < 0.5 then return end; elapsed = 0
+    if not InCombatLockdown() and Signature() ~= lastSignature then pending = true end
+    if pending then TryRefresh() end
+end
+local function Polling() events:SetScript('OnUpdate', Enabled() and Poll or nil) end
+FHK.SyncEllesmereQuestBarPolling = Polling
 events:SetScript('OnEvent', function(_, event)
     if event == 'PLAYER_ENTERING_WORLD' then
         FHK.QuestBarOwnsCtrlNaga = Enabled()
         started, pending = true, true; C_Timer.After(2, TryRefresh)
+        Polling()
     else pending = true end
-end)
-events:SetScript('OnUpdate', function(_, dt)
-    if not started or not Enabled() then return end
-    elapsed = elapsed + dt; if elapsed < 0.5 then return end; elapsed = 0
-    if not InCombatLockdown() and Signature() ~= lastSignature then pending = true end
-    if pending then TryRefresh() end
 end)
 
 SLASH_FHKQUESTBAR1 = '/fhkquestbar'

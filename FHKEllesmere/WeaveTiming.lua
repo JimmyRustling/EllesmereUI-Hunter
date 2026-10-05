@@ -3,7 +3,7 @@ if EUI_CLIENT_BLOCKED then return end
 local _, NS = ...
 NS = _G.FHKEllesmereNS or NS
 if NS.WeaveTiming then return end
-FHKEllesmereDB = FHKEllesmereDB or {}
+if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
 local Timing = {}
 NS.WeaveTiming = Timing
 

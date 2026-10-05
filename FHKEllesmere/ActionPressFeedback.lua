@@ -32,7 +32,7 @@ local function Read(fn,...)
     if ok and Public(a) and Public(b) and Public(c) then return a,b,c end
 end
 function NS.EllesmerePressSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.actionPress
     if type(s)~='table' then s={};FHKEllesmereDB.actionPress=s end
     for key,value in pairs(DEFAULTS) do if s[key]==nil then s[key]=value end end
@@ -437,15 +437,31 @@ function NS.AddEllesmerePressOptions(Row)
         getValue=function() return math.floor((s[key] or 1)*100+.5) end,setValue=function(v) Set(key,v/100) end},need) end
     local function Drop(text,key,values,order,need) return Needs({type='dropdown',text=text,values=values,order=order,
         getValue=function() return s[key] end,setValue=function(v) Set(key,v) end},need) end
-    Row(Toggle('Flash Every Action Press','flash','A short accent border responds to each key-down, even when the ability cannot fire.'),
-        Toggle('Recent Action History','history','A separate movable unit in native Unlock Mode. Icons slide in and fade away.'))
+    -- Ellesmere's row tools: fine-tuning in the cogs, the preview on the eye.
+    local function CogSlider(label,key,min,max,step) return {type='slider',label=label,min=min,max=max,step=step or 1,
+        get=function() return s[key] end,set=function(v) Set(key,v) end} end
+    local function CogPercent(label,key,min) return {type='slider',label=label,min=min,max=100,step=5,
+        get=function() return math.floor((s[key] or 1)*100+.5) end,set=function(v) Set(key,v/100) end} end
+    local function CogDrop(label,key,values,order) return {type='dropdown',label=label,values=values,order=order,
+        get=function() return s[key] end,set=function(v) Set(key,v) end} end
+    local flash=Toggle('Flash Every Action Press','flash','A short accent border responds to each key-down, even when the ability cannot fire.')
+    flash.cog={title='Press Flash',disabled=flashOff.fn,disabledTooltip=flashOff.why,rows={
+        CogPercent('Opacity %','flashOpacity',10),CogSlider('Duration','flashDuration',.08,.5,.02)}}
+    local history=Toggle('Recent Action History','history','A separate movable unit in native Unlock Mode. Icons slide in and fade away.')
+    local hold=CogSlider('Hide After Idle (sec)','hold',1,15,1)
+    hold.tooltip='The whole strip fades this long after your last action. Older icons leave when new ones push them out.'
+    history.cog={title='Action History',disabled=historyOff.fn,disabledTooltip=historyOff.why,rows={
+        CogSlider('Icon Count','count',3,8,1),CogSlider('Icon Size','size',16,64,1),CogSlider('Icon Spacing','gap',0,16,1),
+        CogSlider('Icon Zoom','zoom',0,.2,.01),CogDrop('Direction','direction',{horizontal='Horizontal',vertical='Vertical'},{'horizontal','vertical'}),
+        hold,CogPercent('Opacity %','opacity',20),CogPercent('Older Icon Opacity %','olderOpacity',10)}}
+    history.preview={tip='Preview action history',show=Preview,duration=4}
+    Row(flash,history)
     -- Two history displays, two questions (audit F26): ours shows what you pressed
     -- (with keys); Damage Meters' Spell History shows what was cast.
     Row({type='label',text='Recent Actions: what you pressed, with keys. Spell History: what was cast.'},
         {type='button',text='Open Native Spell History',onClick=function()
             if EUI.NavigateToElementSettings then EUI:NavigateToElementSettings('EllesmereUIDamageMeters','Spell History') end
         end})
-    Row(Percent('Press Flash Opacity %','flashOpacity',10,flashOff),Slider('Press Flash Duration','flashDuration',.08,.5,.02,flashOff),true)
     -- Cast mode only lists casts that came from an action-bar key (audit F04).
     local records=Drop('History Records','mode',{presses='Key Presses',casts='Casts From Bar Keys'},{'presses','casts'},historyOff)
     records.tooltip='Key Presses: every attempted press. Casts From Bar Keys: successful casts that started from an action-bar key; casts from elsewhere are not listed.'
@@ -453,20 +469,11 @@ function NS.AddEllesmerePressOptions(Row)
     fold.disabled=function() return not s.history or s.mode=='casts' end
     fold.disabledTooltip=function() return not s.history and historyOff.why or 'Key Presses mode only' end
     Row(records,fold)
-    Row(Slider('History Icon Count','count',3,8,1,historyOff),Slider('History Icon Size','size',16,64,1,historyOff),true)
-    Row(Slider('History Icon Spacing','gap',0,16,1,historyOff),Slider('History Icon Zoom','zoom',0,.2,.01,historyOff),true)
-    -- The strip fades after a pause in input, not per icon (audit F43).
-    local hold=Slider('Hide History After Idle (sec)','hold',1,15,1,historyOff)
-    hold.tooltip='The whole strip fades this long after your last action. Older icons leave when new ones push them out.'
-    Row(Drop('History Direction','direction',{horizontal='Horizontal',vertical='Vertical'},{'horizontal','vertical'},historyOff),hold,true)
-    Row(Percent('History Opacity %','opacity',20,historyOff),Percent('Older Icon Opacity %','olderOpacity',10,historyOff),true)
-    Row(Toggle('Show History Key Labels','keys','Bright label: the key was seen held. Dim label: the action\'s assigned binding, shown when the actual key could not be seen.',historyOff),
-        Toggle('Include Mouse Clicks','mouse','Includes mouse clicks in press history; labels them Click or RClick.',historyOff))
+    local keyLabels=Toggle('Show History Key Labels','keys','Bright label: the key was seen held. Dim label: the action\'s assigned binding, shown when the actual key could not be seen.',historyOff)
+    keyLabels.cog={title='History Key Labels',disabled=function() return not (s.history and s.keys) end,disabledTooltip='Show History Key Labels',rows={
+        CogSlider('Font Size','keySize',8,18,1),CogDrop('Position','keyPosition',{bottom='Below Icon',corner='Top Right'},{'bottom','corner'})}}
+    Row(keyLabels,Toggle('Include Mouse Clicks','mouse','Includes mouse clicks in press history; labels them Click or RClick.',historyOff))
     Row(Toggle('Naga Button Labels','nagaLabels','Shows N1-N6 for F9-F12 / Insert / Delete, N9 / N11 / N12 for the Synapse chords, instead of the keys they send.',historyOff),
-        {type='label',text='Example: Shift+F9 shows as S+N1'})
-    Row(Slider('History Key Font Size','keySize',8,18,1,historyOff),
-        Drop('History Key Position','keyPosition',{bottom='Below Icon',corner='Top Right'},{'bottom','corner'},historyOff),true)
-    Row({type='button',text='Preview History',onClick=Preview},
         Needs({type='button',text='Move / Resize History',onClick=function()
             if s.history and EUI.ToggleUnlockMode then EUI:ToggleUnlockMode() end
         end},historyOff))

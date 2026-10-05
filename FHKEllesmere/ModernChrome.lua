@@ -14,7 +14,7 @@ local MEDIA = 'Interface\\AddOns\\EllesmereUI\\media\\'
 local KEY_ICON = 'Interface\\AddOns\\' .. addon .. '\\media\\menu-keyring.png'
 
 local function Database()
-    FHKEllesmereDB = FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     return FHKEllesmereDB
 end
 

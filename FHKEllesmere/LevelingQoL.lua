@@ -25,7 +25,7 @@ local unpack=unpack or table.unpack
 NS.LevelingQoL=L
 local DEFAULTS={mirrorSkin=true,rangeFade=false,rangeAlpha=.45,lootLeft=true,lootQuality=2,gatherTrack=false,zoneLevels=true,manaVisible=false,closeBags=true}
 function NS.EllesmereLevelingSettings()
-    FHKEllesmereDB=FHKEllesmereDB or {}
+    if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.levelingQoL
     if type(s)~='table' then s={};FHKEllesmereDB.levelingQoL=s end
     for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
@@ -392,28 +392,25 @@ end
 function NS.AddEllesmereLevelingOptions(Row)
     local s=NS.EllesmereLevelingSettings()
     local function Set(key,v) s[key]=v;NS.SyncEllesmereLeveling();if EUI.RefreshPage then EUI:RefreshPage() end end
-    Row({type='toggle',text='Skin Breath And Fatigue Bars',tooltip='Breath, fatigue and Feign Death bars take the flat Ellesmere look: dark track, thin border, a color per timer. Move them in Blizzard Edit Mode.',
-        getValue=function() return s.mirrorSkin end,setValue=function(v) Set('mirrorSkin',v) end},
-        {type='toggle',text='Loot Left Behind',tooltip='When a loot window closes with items still in it (full bags or rushing), lists them in chat and warns, saying when your bags are full.',
-        getValue=function() return s.lootLeft end,setValue=function(v) Set('lootLeft',v) end})
-    if NS.EllesmereColorRow then
-        local off=function() return not s.mirrorSkin end
-        local function Row2(key,text)
-            local r=NS.EllesmereColorRow(key,text);r.disabled=off;r.disabledTooltip='Skin Breath And Fatigue Bars';return r
-        end
-        Row(Row2('mirrorBreath','Breath Bar Color'),Row2('mirrorFatigue','Fatigue Bar Color'))
-        Row(Row2('mirrorFeign','Feign Death Bar Color'),NS.EllesmereResetColors({'mirrorBreath','mirrorFatigue','mirrorFeign'},'Reset Bar Colors'))
+    local skin={type='toggle',text='Skin Breath And Fatigue Bars',tooltip='Breath, fatigue and Feign Death bars take the flat Ellesmere look: dark track, thin border, a color per timer. Move them in Blizzard Edit Mode.',
+        getValue=function() return s.mirrorSkin end,setValue=function(v) Set('mirrorSkin',v) end}
+    if NS.EllesmereColorSwatch then
+        skin.swatches={NS.EllesmereColorSwatch('mirrorBreath','Breath Bar Color'),NS.EllesmereColorSwatch('mirrorFatigue','Fatigue Bar Color'),
+            NS.EllesmereColorSwatch('mirrorFeign','Feign Death Bar Color')}
     end
+    Row(skin,{type='toggle',text='Loot Left Behind',tooltip='When a loot window closes with items still in it (full bags or rushing), lists them in chat and warns, saying when your bags are full.',
+        getValue=function() return s.lootLeft end,setValue=function(v) Set('lootLeft',v) end})
     Row({type='dropdown',text='Loot Left Behind From',values={['0']='Poor',['1']='Common',['2']='Uncommon',['3']='Rare',['4']='Epic'},order={'0','1','2','3','4'},
         disabled=function() return not s.lootLeft end,disabledTooltip='Loot Left Behind',
         getValue=function() return tostring(s.lootQuality) end,setValue=function(v) Set('lootQuality',tonumber(v) or 2) end},
         {type='toggle',text='Zone Levels On Map',tooltip='The world map shows the level range of the zone it shows, colored for your level. Classic ranges.',
         getValue=function() return s.zoneLevels end,setValue=function(v) Set('zoneLevels',v) end})
-    Row({type='toggle',text='Target Range Fade',tooltip='The target frame fades while your target is out of range. Never in the dead zone, where the range indicator already says so.',
-        getValue=function() return s.rangeFade end,setValue=function(v) Set('rangeFade',v) end},
-        {type='slider',text='Out Of Range Opacity',min=10,max=90,step=5,
-        disabled=function() return not s.rangeFade end,disabledTooltip='Target Range Fade',
-        getValue=function() return math.floor(s.rangeAlpha*100+.5) end,setValue=function(v) s.rangeAlpha=v/100;L.CheckRange() end})
+    local fade={type='toggle',text='Target Range Fade',tooltip='The target frame fades while your target is out of range. Never in the dead zone, where the range indicator already says so.',
+        getValue=function() return s.rangeFade end,setValue=function(v) Set('rangeFade',v) end}
+    fade.cog={title='Target Range Fade',disabled=function() return not s.rangeFade end,disabledTooltip='Target Range Fade',rows={
+        {type='slider',label='Out Of Range Opacity',min=10,max=90,step=5,get=function() return math.floor(s.rangeAlpha*100+.5) end,
+            set=function(v) s.rangeAlpha=v/100;L.CheckRange() end}}}
+    Row(fade,NS.EllesmereResetColors and NS.EllesmereResetColors({'mirrorBreath','mirrorFatigue','mirrorFeign'},'Reset Bar Colors') or EUI.BlankRowCfg())
     Row({type='toggle',text='Close Bags Opened By NPCs',tooltip='When a vendor, mailbox, auction house or trade window closes, your bags close too if they opened with it. Bags you had open or opened yourself stay.',
         getValue=function() return s.closeBags end,setValue=function(v) Set('closeBags',v) end},
         {type='label',text='The bank already does this natively'})
