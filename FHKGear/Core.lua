@@ -3,26 +3,62 @@
 if EUI_CLIENT_BLOCKED then return end
 local ADDON, ns = ...
 local S = ns.Safe
-ns.VERSION, ns.MAX_LEVEL = '0.5.1', 60
+ns.VERSION, ns.MAX_LEVEL = '0.5.3', 60
 _G.FHKGearNS = ns
 local DEFAULTS = {
     autoEquip=false,autoQuest=false,autoRoll=false,levellingOnly=true,
     markQuest=true,tooltip=true,chat=true,markBags=false,markRoll=false,markCharacter=false,
-    equipBoE=true,autoEquipMaxQuality=2,phase='auto',phaseLevel=60,source='auto',
+    equipBoE=true,autoEquipMaxQuality=2,equipBoEMaxQuality=2,phase='auto',phaseLevel=60,source='auto',
     ratingUnits='unknown',comparisonModel='weights',fightLength=15,meleeShare=0.175,
     incomingHits=0,useUptime=0.8,allowEstimates=true,targetType='any',objective='damage',weaponStyle='preset',
     profileIncludeWeights=false,profileIncludeRules=false,
     rollNeedUpgrades=true,rollGreedOthers=true,confirmEquipBinds=false,confirmLootRolls=false,autoBags=false,
     markerStyle='border',greedMarkerStyle='coin',markerSize=18,markerOpacity=1,markerPosition='TOPRIGHT',markerOffsetX=0,markerOffsetY=0,
     hunterPet='auto',multiTargets=1,autoAmmo=true,popActions=true,popFound=true,popDuration=8,
+    -- 0.5.3 (review G2, G4): roll etiquette and the rarity cap scope. All off by default.
+    rollMinGain=0,rollNeedArmorType=false,rollNeedMainStat=false,rarityCapBoEOnly=false,
+    -- Non-gear loot (player, 2026-10-06): your roll by default; Greed or Need up to a rarity on request.
+    rollNonGear='player',rollNonGearMaxQuality=2,
 }
 ns.CHAR_DEFAULTS = DEFAULTS
+-- Colour tokens (review G12): every tooltip, status and pop-up colour. The player's own value lives in
+-- FHKGearCharDB.textColours[key] = {r,g,b}; markers keep their own markerColours (upgrade, greed).
+local COLOURS={upgrade={0.25,1,0.35},muted={0.6,0.6,0.6},greed={1,0.78,0.2},skill={1,0.78,0.2},
+    caution={1,0.78,0.2},gain={0.25,1,0.35},loss={1,0.35,0.35}}
+ns.COLOUR_DEFAULTS=COLOURS
+ns.COLOUR_KEYS={'upgrade','muted','greed','skill','caution','gain','loss'}
+-- Color-blind preset (review G14): Okabe-Ito sky blue and orange, never the uncommon-quality green.
+ns.COLOURBLIND={upgrade={0.34,0.71,0.91},greed={0.9,0.62,0},gain={0.34,0.71,0.91},loss={0.9,0.62,0}}
+local function ValidColour(c) return S.Table(c) and S.Number(c[1]) and S.Number(c[2]) and S.Number(c[3]) and c[1]>=0 and c[1]<=1 and c[2]>=0 and c[2]<=1 and c[3]>=0 and c[3]<=1 end
+ns.ValidColour=ValidColour
+function ns.Colour(key)
+    local own=ns.Char().textColours[key]
+    if ValidColour(own) then return own[1],own[2],own[3] end
+    local d=COLOURS[key] or COLOURS.muted
+    return d[1],d[2],d[3]
+end
+-- One click (review G14): marker shape and colors plus the matching text tokens. Resets undo it.
+function ns.ApplyColourBlindPreset()
+    local c,p=ns.Char(),ns.COLOURBLIND
+    c.markerStyle,c.greedMarkerStyle='arrow','coin'
+    c.markerColours={upgrade={p.upgrade[1],p.upgrade[2],p.upgrade[3]},greed={p.greed[1],p.greed[2],p.greed[3]}}
+    for key,colour in pairs(p) do c.textColours[key]={colour[1],colour[2],colour[3]} end
+end
+function ns.ColourCode(key)
+    local r,g,b=ns.Colour(key)
+    return ('|cff%02x%02x%02x'):format(math.floor(r*255+0.5),math.floor(g*255+0.5),math.floor(b*255+0.5))
+end
 local char,account,levelHint
 function ns.Char()
     if not S.Table(FHKGearCharDB) then FHKGearCharDB = {} end
     if char==FHKGearCharDB then return char end
     -- Rebind if SavedVariables is assigned after an early consumer.
     if char ~= FHKGearCharDB then char = FHKGearCharDB end
+    -- 0.5.3 test builds saved a Greed on Non-Gear Loot toggle: carry an explicit choice over once.
+    if char.rollGreedNonGear~=nil then
+        if char.rollNonGear==nil and char.rollGreedNonGear==true then char.rollNonGear='greed' end
+        char.rollGreedNonGear=nil
+    end
     for k,v in pairs(DEFAULTS) do
         local value=char[k]
         if value==nil then char[k]=v
@@ -30,7 +66,11 @@ function ns.Char()
             S.Note('setting:' .. k,'Invalid saved setting reset');char[k]=v
         end
     end
-    for _,k in ipairs({'locked','ignore','ignoreLinks','ratingConversions','rotation','procRates','markerColours','hunterTalents'}) do
+    if char.rollNonGear~='player' and char.rollNonGear~='greed' and char.rollNonGear~='need' then char.rollNonGear='player' end
+    for _,k in ipairs({'equipBoEMaxQuality','rollNonGearMaxQuality'}) do
+        if char[k]<0 or char[k]>5 or char[k]~=math.floor(char[k]) then char[k]=DEFAULTS[k] end
+    end
+    for _,k in ipairs({'locked','ignore','ignoreLinks','ratingConversions','rotation','procRates','markerColours','hunterTalents','textColours'}) do
         if not S.Table(char[k]) then char[k] = {} end
     end
     return char
@@ -69,12 +109,14 @@ end
 function ns.Say(message,forced)
     if S.Text(message) and (forced or ns.Char().chat) then print('|cffd9a521Gear|r ' .. message) end
 end
+-- An automatic action is reported once (review G13): by its pop-up card, or in chat when no card showed.
+function ns.SayAction(message,shown) if not shown then ns.Say(message) end end
 function ns.ResetSettings()
     local c=ns.Char()
     for k,v in pairs(DEFAULTS) do c[k]=v end
     c.spec,c.locked,c.ignore,c.ignoreLinks=nil,{},{},{}
     c.rotation,c.procRates,c.ratingConversions={},{},{}
-    c.markerColours,c.hunterTalents={},{}
+    c.markerColours,c.hunterTalents,c.textColours={},{},{}
     ns.Changed('items')
 end
 function ns.AddOnLoaded(name)
@@ -100,12 +142,20 @@ end
 function ns.Automating(kind) return ns.Char()[kind]==true and not ns.LevellingCapped() and not ns.AutoGearActive() and ns.ActionAvailable(kind) end
 -- Upgrade Found pop-ups follow Levelling Mode (none from level 60) and stay off while AutoGear runs.
 function ns.FoundPopUps() return ns.Char().popFound==true and not ns.LevellingCapped() and not ns.AutoGearActive() end
-function ns.AutoEquipAllowed(info)
+local bagsAfterCombat=false
+-- forRoll: a loot roll item is not bound to you yet, even when it binds on pickup (review R3-4).
+function ns.AutoEquipAllowed(info,forRoll)
     if not info or info.missing or not S.Number(info.quality) then return false end
     local c=ns.Char()
     local cap=S.Number(c.autoEquipMaxQuality) and c.autoEquipMaxQuality or 2
     if cap<0 or cap>5 then cap=2 end
-    return info.quality<=cap and (info.bound~='boe' or c.equipBoE==true)
+    -- Rarity Cap: Bind on Equip Only (review G4): an item already bound to you (a quest reward, a BoP
+    -- drop) cannot be sold or traded, so the cap no longer holds it back. BoE and unbound items keep it.
+    local mine=c.rarityCapBoEOnly==true and (info.bound=='bound' or info.bound=='bop' and not forRoll)
+    -- Bind on Equip has its own cap (player, 2026-10-06): an item you could still sell or trade binds
+    -- only up to this rarity.
+    local boeCap=S.Number(c.equipBoEMaxQuality) and c.equipBoEMaxQuality or 2
+    return (mine or info.quality<=cap) and (info.bound~='boe' or c.equipBoE==true and info.quality<=boeCap)
 end
 local frame=CreateFrame('Frame')
 ns.frame,ns.handlers=frame,{}
@@ -151,7 +201,7 @@ function ns.Refresh()
     ns.Want('START_LOOT_ROLL',roll or c.markRoll)
     ns.Want('CONFIRM_LOOT_ROLL',roll)
     ns.Want('CANCEL_LOOT_ROLL',roll or c.markRoll)
-    if not equip then ns.Want('PLAYER_REGEN_ENABLED',false) end
+    if not equip and not bagsAfterCombat and not (ns.Notify and ns.Notify.Waiting and ns.Notify.Waiting()) then ns.Want('PLAYER_REGEN_ENABLED',false) end
     if ns.Actions then ns.Actions.Refresh();if equip then ns.QueueEquip(0.5) end end
     if ns.RefreshMarkers then ns.RefreshMarkers() end
 end
@@ -220,6 +270,7 @@ handlers.WEAPON_ENCHANT_CHANGED=function()
 end
 handlers.PLAYER_SPECIALIZATION_CHANGED=function(unit) if not unit or unit=='player' then ContextChanged(false) end end
 handlers.PLAYER_LEVEL_UP=function(level)
+    if ns.Actions then ns.Actions.ClearManual() end
     if S.Number(level) then levelHint=level;ns.Refresh() end
     C_Timer.After(0.5,function()
         local actual=S.Read(UnitLevel,'player')
@@ -250,21 +301,25 @@ handlers.PLAYER_EQUIPMENT_CHANGED=function(slot)
     ns.Engine.InvalidateEquipped()
     if ns.HunterModel then ns.HunterModel.AmmoChanged() end
     QueueModel()
-    if ns.Actions then ns.Actions.Acknowledge(slot) end
+    if ns.Actions and not ns.Actions.Acknowledge(slot) then ns.Actions.Changed(slot) end
     if ns.Automating('autoEquip') then ns.QueueEquip(0.3) end
     if ns.RefreshMarkers then ns.RefreshMarkers() end
 end
 handlers.BAG_UPDATE_DELAYED=function()
+    -- Every Auto Shot changes the quiver stack (review GU6): in combat, do the bag work once afterwards.
+    if S.Read(InCombatLockdown)==true then bagsAfterCombat=true;ns.Want('PLAYER_REGEN_ENABLED',true);return end
     if ns.Notify then ns.Notify.QueueFound() end
     -- Ammo bought or used up changes which guns or bows can shoot.
     if ns.HunterModel and ns.HunterModel.Active() then ns.HunterModel.AmmoChanged();QueueModel() end
     if ns.Automating('autoEquip') then ns.QueueEquip(0.3) end
     if ns.RefreshMarkers then ns.RefreshMarkers() end
 end
+function ns.BagsAfterCombat() if bagsAfterCombat then bagsAfterCombat=false;handlers.BAG_UPDATE_DELAYED() end end
 local function Migrate()
     local acct,ag=ns.Account(),rawget(_G,'AutoGearDB')
     if acct.migratedAutoGear or not S.Table(ag) then return end
     acct.migratedAutoGear=true
+    local scales,locks={},0
     if S.Table(ag.ImportedWeights) then
         acct.imported=acct.imported or {}
         for key,w in pairs(ag.ImportedWeights) do
@@ -276,16 +331,50 @@ local function Migrate()
                 end
                 if copy.DPS then copy.RangedDPS,copy.MeleeDPS=copy.RangedDPS or copy.DPS,copy.MeleeDPS or copy.DPS;copy.DPS=nil end
                 acct.imported[key]=copy
+                if #scales<16 then scales[#scales+1]=key:gsub(':',' ') end
             end
         end
     end
     acct.migrationRules={locked={},quest={}}
     if ag.LockGearSlots and S.Table(ag.LockedGearSlots) then
         for slot,rule in pairs(ag.LockedGearSlots) do
-            if S.Number(slot) and S.Table(rule) and rule.enabled then acct.migrationRules.locked[slot]=true end
+            if S.Number(slot) and S.Table(rule) and rule.enabled then acct.migrationRules.locked[slot]=true;locks=locks+1 end
         end
     end
     -- Rules are offered for explicit import in Equipment Rules; automation stays OFF.
+    -- Never silent (review G10): say once what was copied, and where it now takes effect.
+    table.sort(scales)
+    if #scales>0 then
+        ns.Say(('Copied %d AutoGear weight scale%s (%s). Gear now scores those specs with them; your own weights on the Stat Weights page still win.')
+            :format(#scales,#scales==1 and '' or 's',table.concat(scales,', ')),true)
+    end
+    if locks>0 then
+        ns.Say(('Found %d AutoGear slot lock%s. They are not applied: import them in Gear > Equipment Rules > AutoGear Slot Locks.'):format(locks,locks==1 and '' or 's'),true)
+    end
+    acct.migrationSummary={scales=#scales,locks=locks}
+end
+-- What AutoGear does on this character and which Gear toggle covers it (review G10). Lines for the Disable dialog.
+local AUTOGEAR_FEATURES={
+    {keys={'Enabled'},text='equips upgrades',gear='autoEquip',label='Auto-Equip Upgrades'},
+    {keys={'AutoLootRoll','AutoRollOnBoEBlues','AutoRollOnEpics'},text='rolls on loot',gear='autoRoll',label='Auto-Roll on Loot'},
+    {keys={'AutoCompleteItemQuests'},text='picks quest rewards',gear='autoQuest',label='Auto-Pick Quest Rewards'},
+    {keys={'AutoAcceptQuests'},text='accepts and hands in quests'},
+    {keys={'AutoSellGreys'},text='sells grey items'},
+    {keys={'AutoRepair'},text='repairs at vendors'},
+    {keys={'AutoAcceptPartyInvitations'},text='accepts party invitations'},
+}
+function ns.AutoGearSummary()
+    local ag,c,out=rawget(_G,'AutoGearDB'),ns.Char(),{}
+    if not S.Table(ag) then return out end
+    for _,f in ipairs(AUTOGEAR_FEATURES) do
+        local on=false
+        for _,key in ipairs(f.keys) do if S.Plain(ag[key]) and ag[key]==true then on=true end end
+        if on then
+            if f.gear then out[#out+1]=('AutoGear %s. Gear: %s is %s.'):format(f.text,f.label,c[f.gear] and 'on' or 'off')
+            else out[#out+1]=('AutoGear %s. Gear does not do this.'):format(f.text) end
+        end
+    end
+    return out
 end
 ns.Migrate=Migrate
 handlers.ADDON_LOADED=function(name)
@@ -343,8 +432,9 @@ SlashCmdList.FHKGEAR=function(message)
         for _,line in ipairs(info.unknown or {}) do Say('Unknown: ' .. line) end
         for stat,value in pairs(info.rawRatings or {}) do Say(('Raw %s rating: %g'):format(stat,value)) end
     elseif cmd=='status' then
-        local _,source=ns.Weights.Current();local class,spec=ns.Weights.ClassSpec()
-        Say(('%s %s, %s phase; weights: %s%s (approximate).'):format(spec,class,ns.Weights.Phase(),source,ns.Engine.UsesForeverGear() and ' (ForeverGear scores)' or ''))
+        local _,source=ns.Weights.Current();local class=ns.Weights.ClassSpec()
+        local name,how=ns.Weights.SpecLabel()
+        Say(('%s %s (%s), %s phase; weights: %s%s (approximate).'):format(name,class,how,ns.Weights.Phase(),source,ns.Engine.UsesForeverGear() and ' (ForeverGear scores)' or ''))
         Say(('Automatic: equip %s, quest %s, roll %s%s%s.'):format(tostring(ns.Automating('autoEquip')),tostring(ns.Automating('autoQuest')),tostring(ns.Automating('autoRoll')),
             ns.LevellingCapped() and '; Levelling Mode: off at 60' or '',ns.AutoGearActive() and '; AutoGear is enabled, so Gear only marks' or ''))
     elseif cmd=='errors' then

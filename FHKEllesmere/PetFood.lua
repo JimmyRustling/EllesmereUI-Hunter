@@ -26,9 +26,11 @@
 --     Feed Pet Reminder in Warnings says when the pet needs food.
 --   Food counts for the No / Low Pet Food warning (Warnings.lua).
 --   Feed Pet timer: the food button sweeps while the pet is eating (Feed Pet Effect).
---   Auto-Buy Pet Food (opt-in): at a vendor, tops edible food up to a target count with the
---     Food Choice rule, at most two stacks per visit and never more than a tenth of your
---     money; every purchase is printed.
+--   Auto-Buy Pet Food moved to the Vendor Restock engine (Restock.lua, Warnings > VENDOR
+--     RESTOCK; review S19-S21). Here: the player's own food the engine bought is not pet food
+--     (count, button, Food Only, row) while it is at or under their Food Keep, and each
+--     CanPetEatItem answer feeds Restock's per-family diet cache (F.OnEdible, set only while
+--     the Pet Food category is on).
 -- Edible = C_PetInfo.CanPetEatItem(itemID) is readably true; unreadable never counts.
 local EUI,NS=_G.EllesmereUI,_G.FHKEllesmereNS
 if EUI_CLIENT_BLOCKED or not EUI or not NS then return end
@@ -39,7 +41,7 @@ local unpack=unpack or table.unpack
 local MAX_CHOICES=8
 -- view: 'filter' (Food Only) / 'row' (Pet Food Row) / 'rowgrey' (row plus Blizzard's overlay on
 -- Ellesmere bags) / 'off'.
-local DEFAULTS={button=false,view='filter',size=28,choice='level',autoBuy=false,buyKeep=20}
+local DEFAULTS={button=false,view='filter',size=28,choice='level'}
 local ROW_SIZE,ROW_MAX=36,12
 -- Food far below the pet pleases it little (Classic rule; unverified on Forever): Cheapest
 -- only picks food at most this many levels below the pet, else falls back to the closest.
@@ -87,15 +89,17 @@ end
 -- The bag list is rebuilt after bag changes; what the pet eats is kept until the pet
 -- changes (its diet), so a bag update costs one CanPetEatItem per new item, not per slot.
 local cache,edibleById=nil,{}
--- One purchase per vendor visit: bag counts lag behind a purchase, so a retry could buy twice.
-local boughtThisVisit=false
 function F.Invalidate(petChanged) cache=nil;if petChanged then edibleById={} end end
 local function Edible(id)
     local known=edibleById[id]
     if known~=nil then return known end
     local eats=Read(C_PetInfo and C_PetInfo.CanPetEatItem,id)
     -- Unreadable answers are not remembered, so they are asked again next scan.
-    if eats==true or eats==false then edibleById[id]=eats end
+    if eats==true or eats==false then
+        edibleById[id]=eats
+        -- Restock's diet cache (S20): learnt only while its Pet Food category is on.
+        if F.OnEdible then F.OnEdible(id,eats) end
+    end
     return eats==true
 end
 F.Edible=Edible
@@ -123,13 +127,40 @@ function F.Scan()
             end
         end
     end
+    list=F.Reserve(list)
     cache=list
     return list
+end
+-- Review S19: the player food the Vendor Restock engine bought (its last 3 IDs) stays the
+-- player's while it is at or under their Food Keep. Food the pet cannot eat covers that first;
+-- with nothing left over those stacks leave the list (button, row, Food Only), else only the
+-- held amount leaves the count. An unreadable total holds all of it.
+F.held,F.hidden=0,nil
+function F.Reserve(list)
+    F.held,F.hidden=0,nil
+    local set,keep
+    if NS.EllesmerePlayerFoodReservation then set,keep=NS.EllesmerePlayerFoodReservation() end
+    if not set or not Num(keep) then return list end
+    local edible=0
+    for _,food in ipairs(list) do if set[food.id] then edible=edible+food.count end end
+    if edible==0 then return list end
+    local total=0
+    for id in pairs(set) do
+        local n=Read(C_Item and C_Item.GetItemCount or _G.GetItemCount,id)
+        if not Num(n) then total=nil;break end
+        total=total+n
+    end
+    local hold=total and math.min(edible,math.max(0,keep-(total-edible))) or edible
+    if hold<edible then F.held=hold;return list end
+    local kept={}
+    for _,food in ipairs(list) do if not set[food.id] then kept[#kept+1]=food end end
+    F.hidden=set
+    return kept
 end
 function NS.EllesmerePetFoodCount()
     local n=0
     for _,food in ipairs(F.Scan()) do n=n+food.count end
-    return n
+    return math.max(0,n-(F.held or 0))
 end
 -- Best: closest item level to the pet's (food near the pet's level pleases it most);
 -- ties go to the bigger stack. Unknown levels sort last.
@@ -303,7 +334,7 @@ local function BuildButton()
             loadPos=function() return NS.EllesmerePetFoodSettings().position end,
             clearPos=function() NS.EllesmerePetFoodSettings().position=nil end,
             applyPos=Position,noResize=true,
-        })},'EllesmereUIUnitFrames')
+        })},'FHKEllesmere') -- our mover: never exported or dropped with a suite module's layout (SC-3)
     end
 end
 
@@ -457,9 +488,11 @@ local function BagsProfile() return type(EUI._bagsDB)=='table' and type(EUI._bag
 -- Ellesmere's slot data ({bag, slot, info, categoryIndex, ...}) for edible items only.
 function F.FoodSlots(list)
     local out={}
+    F.Scan() -- the reservation (S19) is worked out with the scan
+    local hidden=F.hidden
     for _,d in ipairs(type(list)=='table' and list or {}) do
         local id=type(d)=='table' and type(d.info)=='table' and d.info.itemID
-        if Num(id) and Edible(id) then out[#out+1]=d end
+        if Num(id) and Edible(id) and not (hidden and hidden[id]) then out[#out+1]=d end
     end
     return out
 end
@@ -470,6 +503,17 @@ function F.Carrier(cats,food)
     local function Plain(c) return type(c)=='table' and not (c.isPinned or c.isRecent or c.groupName or c.isEquipSet or c.isSetGear or c.isReagentBag) and not hidden[c._defaultName] end
     for _,d in ipairs(food) do if Plain(cats[d.categoryIndex]) then return d.categoryIndex end end
     for i,c in ipairs(cats) do if Plain(c) then return i end end
+end
+-- Every edible bag item as Ellesmere slot data ({bag, slot, info, itemLink}).
+function F.AllFood()
+    local out,C={},C_Container
+    for _,e in ipairs(F.Scan()) do
+        local info=C and Read(C.GetContainerItemInfo,e.bag,e.slot)
+        local link=C and Read(C.GetContainerItemLink,e.bag,e.slot)
+        if type(link)~='string' and type(info)=='table' then link=info.hyperlink end
+        if type(info)=='table' and type(link)=='string' then out[#out+1]={bag=e.bag,slot=e.slot,info=info,itemLink=link} end
+    end
+    return out
 end
 local function Copy(d,k) local c={};for key,v in pairs(d) do c[key]=v end;c.categoryIndex=k;return c end
 function F.WrapRender()
@@ -498,6 +542,14 @@ function F.WrapRender()
         bns.GetSelection=function() return 0,nil end
         local ok,y=pcall(grid,items,items,{},child,columns,gridW,gridPadX,false,pinnedSet,...)
         bns.GetSelection=selection
+        -- The All Items branch never hides a category tab's Edit | Delete links (review P3); their
+        -- clicks would act on the real tab. Hide them while Food Only draws.
+        if ok and type(child)=='table' and child.GetChildren then
+            for _,c in ipairs({child:GetChildren()}) do
+                local ef=type(c)=='table' and c._editDeleteFrame
+                if type(ef)=='table' and ef.Hide then ef:Hide() end
+            end
+        end
         if k then cats[k].name=name end
         cm.CanAssignToCategory=canAssign
         root._recentItems=recent
@@ -513,8 +565,23 @@ function F.WrapRender()
             if not filterOn or type(opts)~='table' then return list(items,opts,...) end
             local copy={}
             for key,v in pairs(opts) do copy[key]=v end
-            copy.emptySlots,copy.pinned,copy.recent=nil,nil,nil
-            return list(F.FoodSlots(items),copy,...)
+            copy.emptySlots,copy.pinned,copy.recent,copy.slotView,copy.allItems=nil,nil,nil,nil,true
+            -- Every bag, not the open tab's list (review P1), under one Pet Food section like the grid.
+            local cm=rawget(_G,'EUI_CategoryManager')
+            local cats=cm and type(cm.GetCategories)=='function' and cm:GetCategories()
+            local food=F.AllFood()
+            local k=type(cats)=='table' and F.Carrier(cats,food)
+            if not k then return list(F.FoodSlots(items),copy,...) end
+            for _,d in ipairs(food) do d.categoryIndex=k end
+            local name=cats[k].name
+            cats[k].name='Pet Food'
+            local ok,a,b=pcall(list,food,copy,...)
+            cats[k].name=name
+            if not ok then
+                if geterrorhandler then geterrorhandler()(a) end
+                return list(items,opts,...)
+            end
+            return a,b
         end
     end
     return true
@@ -527,17 +594,30 @@ end
 function F.Filter(on,refresh)
     local root=EllesmereRoot()
     on=on and root and F.WrapRender() or false
+    -- No plain category to carry the Pet Food section: use the row instead (review P8).
+    if on then
+        local cm=rawget(_G,'EUI_CategoryManager')
+        local cats=cm and type(cm.GetCategories)=='function' and cm:GetCategories()
+        if type(cats)=='table' and not F.Carrier(cats,{}) then on=false end
+    end
     if on==filterOn then return end
     filterOn=on
     if not root then return end
     if refresh~=false then Refit(root) else root._asCols,root._asMaxGridW,root._asMaxH=nil,nil,nil end
 end
 F.Filtering=function() return filterOn end
-function F.Mark()
+function F.Mark(late)
     local view=NS.EllesmerePetFoodSettings().view
     -- Without Ellesmere's bag renderer (Blizzard bags, another Ellesmere version) Food Only
     -- falls back to the Pet Food row.
-    if view=='filter' then F.Filter(true);if filterOn then return end end
+    if view=='filter' then
+        F.Filter(true)
+        -- After the bags opened: Ellesmere's window must be the one showing (review P2: with the
+        -- gamepad interface Blizzard's bags open instead).
+        local root=EllesmereRoot()
+        if filterOn and late and root and Read(root.IsShown,root)~=true then F.Filter(false,false) end
+        if filterOn then return end
+    end
     F.ShowRow()
     if view=='rowgrey' then EllesmereButtons(function(b) Mark(b,true) end) end
 end
@@ -548,6 +628,21 @@ function F.Unmark()
     F.Filter(false)
 end
 local shownAt=0
+-- One way to end a feed (review P4): the ticker, the filter and row, and the bags we opened.
+local function EndFeed(root)
+    feeding=false
+    if watch then watch:Cancel();watch=nil end
+    local shown=root and Read(root.IsShown,root)==true
+    -- Bags we opened close without redrawing the full layout first.
+    local closing=openedBags and shown and type(ToggleAllBags)=='function'
+    if closing then F.Filter(false,false) end
+    F.Unmark()
+    -- Ellesmere replaces ToggleAllBags; closing through it keeps its own state right.
+    if closing then pcall(ToggleAllBags)
+    elseif openedBags and not shown and type(CloseAllBags)=='function' then pcall(CloseAllBags) end
+    openedBags=false
+end
+F.EndFeed=EndFeed
 function F.UpdateView()
     local on=ViewOn() and FeedTargeting()
     local root=EllesmereRoot()
@@ -571,75 +666,16 @@ function F.UpdateView()
             bagsHooked=pcall(hooksecurefunc,root,'RefreshInventory',function() if feeding and not filterOn then F.Mark() end end)
         end
         F.Mark()
-        if C_Timer and C_Timer.After then C_Timer.After(0,function() if feeding then F.Mark() end end) end
+        if C_Timer and C_Timer.After then C_Timer.After(0,function() if feeding then F.Mark(true) end end) end
         if not watch and C_Timer and C_Timer.NewTicker then
             watch=C_Timer.NewTicker(.5,function() if not FeedTargeting() then F.UpdateView() end end)
         end
-    elseif not on and feeding then
-        feeding=false
-        if watch then watch:Cancel();watch=nil end
-        -- Bags we opened close without redrawing the full layout first.
-        local closing=openedBags and root and Read(root.IsShown,root)==true and type(ToggleAllBags)=='function'
-        if closing then F.Filter(false,false) end
-        F.Unmark()
-        -- Ellesmere replaces ToggleAllBags; closing through it keeps its own state right.
-        if closing then pcall(ToggleAllBags) end
-        openedBags=false
-    elseif on then F.Mark() end
-end
-
--------------------------------------------------------------------------------
--- Auto-Buy Pet Food at vendors.
--------------------------------------------------------------------------------
-function F.MerchantFood()
-    local list={}
-    local n=Read(_G.GetMerchantNumItems)
-    for i=1,Num(n) and n or 0 do
-        local id=Read(_G.GetMerchantItemID,i)
-        local name,_,price,quantity,available,purchasable,_,extended=Read(_G.GetMerchantItemInfo,i)
-        if Num(id) and Num(price) and price>0 and purchasable~=false and not extended and Edible(id) then
-            local level=ItemFacts(id)
-            list[#list+1]={index=i,id=id,price=price,quantity=Num(quantity) and quantity>0 and quantity or 1,
-                available=Num(available) and available or -1,level=level,count=0,bag=0,slot=i,name=name}
-        end
+    elseif not on and feeding then EndFeed(root)
+    elseif on then
+        -- A view change mid-feed (Food Only to a row) drops the filter first.
+        if NS.EllesmerePetFoodSettings().view~='filter' and filterOn then F.Filter(false) end
+        F.Mark()
     end
-    return list
-end
-function F.AutoBuy()
-    local s=NS.EllesmerePetFoodSettings()
-    if not s.autoBuy or boughtThisVisit or Read(_G.UnitExists,'pet')~=true then return end
-    local have=NS.EllesmerePetFoodCount()
-    local need=(Num(s.buyKeep) and s.buyKeep or 20)-have
-    if need<=0 then return end
-    local offers=F.MerchantFood()
-    if #offers==0 then return end
-    local petLevel=Read(_G.UnitLevel,'pet')
-    local pick=(s.choice=='cheap' and F.RankCheap(offers,petLevel) or F.Rank(offers,petLevel))[1]
-    if not pick then return end
-    local stack=Read(_G.GetMerchantItemMaxStack,pick.index)
-    stack=Num(stack) and stack>0 and stack or 20
-    local amount=math.min(need,stack*2)
-    if pick.available>=0 then amount=math.min(amount,pick.available) end
-    local each=pick.price/pick.quantity
-    local money=Read(_G.GetMoney)
-    if not Num(money) then return end
-    amount=math.min(amount,math.floor(money*.1/each))
-    if amount<=0 then return end
-    local bought=0
-    while bought<amount do
-        local batch=math.min(stack,amount-bought)
-        if not pcall(_G.BuyMerchantItem,pick.index,batch) then break end
-        bought=bought+batch
-    end
-    if bought>0 then boughtThisVisit=true end
-    if bought>0 and DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
-        local link=Read(_G.GetMerchantItemLink,pick.index) or pick.name or 'pet food'
-        local cost=math.floor(each*bought+.5)
-        local coins=type(GetCoinTextureString)=='function' and Read(GetCoinTextureString,cost) or (cost..'c')
-        DEFAULT_CHAT_FRAME:AddMessage(('|cffdda880FHK|r Bought %d x %s for your pet (%s).'):format(bought,link,tostring(coins)))
-    end
-    F.Invalidate()
-    return bought,pick
 end
 
 -------------------------------------------------------------------------------
@@ -651,13 +687,6 @@ local function OnEvent(_,event,unit)
     if event=='BAG_UPDATE_DELAYED' or event=='UNIT_LEVEL' then F.Invalidate()
     elseif event=='UNIT_PET' or event=='PLAYER_ENTERING_WORLD' then F.Invalidate(true) end
     if event=='CURRENT_SPELL_CAST_CHANGED' or event=='UPDATE_SPELL_TARGET_ITEM_CONTEXT' or event=='BAG_UPDATE_DELAYED' then F.UpdateView() end
-    if event=='MERCHANT_SHOW' then
-        boughtThisVisit=false;F.AutoBuy()
-        -- Vendor item data can arrive just after the window opens: one more try.
-        if C_Timer and C_Timer.After then C_Timer.After(.6,function() F.AutoBuy() end) end
-        return
-    end
-    if event=='MERCHANT_CLOSED' then boughtThisVisit=false;return end
     if event=='UNIT_AURA' then F.FeedTimer();return end
     if event=='PLAYER_REGEN_DISABLED' then if chooserOpen then chooserOpen=false end return end
     -- A row that should have closed in combat closes as soon as combat ends.
@@ -672,16 +701,22 @@ function NS.SyncEllesmerePetFood()
     local s=NS.EllesmerePetFoodSettings()
     local hunter=Hunter()
     if driver then driver:UnregisterAllEvents() end
-    if not ViewOn() and feeding then feeding=false;F.Unmark() end
+    if not ViewOn() and feeding then EndFeed(EllesmereRoot()) elseif feeding then F.UpdateView() end
     if button and not (s.button and hunter) then
         if InCombat() then pending=true else Visibility(button,false);CloseChooser() end
     end
-    if not hunter or not (s.button or ViewOn() or s.autoBuy) then return end
+    if not hunter or not (s.button or ViewOn()) then
+        -- A row left up in combat still closes when combat ends (review P4).
+        if restorePending then
+            if not driver then driver=CreateFrame('Frame');driver:SetScript('OnEvent',OnEvent) end
+            driver:RegisterEvent('PLAYER_REGEN_ENABLED')
+        end
+        return
+    end
     if not driver then driver=CreateFrame('Frame');driver:SetScript('OnEvent',OnEvent) end
     driver:RegisterEvent('BAG_UPDATE_DELAYED');driver:RegisterEvent('PLAYER_ENTERING_WORLD')
     if driver.RegisterUnitEvent then driver:RegisterUnitEvent('UNIT_PET','player');driver:RegisterUnitEvent('UNIT_LEVEL','pet')
     else driver:RegisterEvent('UNIT_PET');driver:RegisterEvent('UNIT_LEVEL') end
-    if s.autoBuy then driver:RegisterEvent('MERCHANT_SHOW');driver:RegisterEvent('MERCHANT_CLOSED') end
     if ViewOn() then
         driver:RegisterEvent('CURRENT_SPELL_CAST_CHANGED');driver:RegisterEvent('PLAYER_REGEN_ENABLED');driver:RegisterEvent('PLAYER_REGEN_DISABLED')
         if not C_EventUtils or Read(C_EventUtils.IsEventValid,'UPDATE_SPELL_TARGET_ITEM_CONTEXT')==true then driver:RegisterEvent('UPDATE_SPELL_TARGET_ITEM_CONTEXT') end
@@ -699,6 +734,7 @@ end
 function NS.AddEllesmerePetFoodOptions(Row)
     local s=NS.EllesmerePetFoodSettings()
     local function Set(key,v) s[key]=v;NS.SyncEllesmerePetFood();if EUI.RefreshPage then EUI:RefreshPage() end end
+    local function RestockOn() return NS.EllesmereRestockPetFoodOn and NS.EllesmereRestockPetFoodOn() or false end
     local button={type='toggle',text='Pet Food Button',tooltip='A button beside the pet frame: left click feeds your chosen food; right click lists every food your pet eats. Hidden in combat. The border shows happiness.',
         getValue=function() return s.button end,setValue=function(v) Set('button',v) end}
     button.cog={title='Pet Food Button',disabled=function() return not s.button end,disabledTooltip='Pet Food Button',rows={
@@ -708,14 +744,12 @@ function NS.AddEllesmerePetFoodOptions(Row)
         getValue=function() return s.view end,setValue=function(v) Set('view',v) end})
     Row({type='dropdown',text='Food Choice',values={level='Closest To Pet Level',cheap='Cheapest'},order={'level','cheap'},
         tooltip='Closest To Pet Level pleases your pet most. Cheapest uses the lowest vendor value that is no more than 20 levels below your pet.',
-        disabled=function() return not (s.button or s.autoBuy) end,disabledTooltip='Pet Food Button',
+        -- The rows are ordered by Food Choice too (review P6).
+        disabled=function() return not (s.button or RestockOn() or s.view=='row' or s.view=='rowgrey') end,disabledTooltip='Pet Food Button',
         getValue=function() return s.choice end,setValue=function(v) Set('choice',v) end},
         {type='label',text='Move the button in Unlock Mode: Pet Food'})
-    Row({type='toggle',text='Auto-Buy Pet Food',tooltip='At a vendor that sells food your pet eats, tops it up to the amount you set, using Food Choice. At most two stacks per visit and never more than a tenth of your money; every purchase is printed in chat.',
-        getValue=function() return s.autoBuy end,setValue=function(v) Set('autoBuy',v) end},
-        {type='slider',text='Keep Pet Food',min=5,max=100,step=5,
-        disabled=function() return not s.autoBuy end,disabledTooltip='Auto-Buy Pet Food',
-        getValue=function() return s.buyKeep end,setValue=function(v) s.buyKeep=v end})
+    -- Auto-Buy Pet Food and Keep Pet Food moved to Warnings > VENDOR RESTOCK (settings migrated).
+    Row({type='label',text='Auto-Buy Pet Food: Warnings > Vendor Restock'},EUI.BlankRowCfg and EUI.BlankRowCfg() or {type='label',text=''})
 end
 
 local boot=CreateFrame('Frame')

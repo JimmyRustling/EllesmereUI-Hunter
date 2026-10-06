@@ -10,7 +10,9 @@ local function State(write)
     if write then
         if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end;FHKEllesmereDB.classHUD=FHKEllesmereDB.classHUD or {}
         local states=FHKEllesmereDB.classHUD;local key=ProfileName()
-        states[key]=states[key] or {};return states[key]
+        states[key]=states[key] or {}
+        if NS.EllesmereStampSnapshot then NS.EllesmereStampSnapshot('classHUD',key) end
+        return states[key]
     end
     return FHKEllesmereDB and FHKEllesmereDB.classHUD and FHKEllesmereDB.classHUD[ProfileName()]
 end

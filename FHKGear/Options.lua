@@ -106,17 +106,28 @@ for quality = 0, 5 do
 end
 
 -- One line that says what Gear will do right now, in the state's own colour (green acting, gold marks only).
+-- Colours are tokens (review G12); the spec in use follows the state (review G1).
+local function WeightsText()
+    local name, how = ns.Weights.SpecLabel()
+    local model = ns.HunterModel and ns.HunterModel.Active() and ', Hunter Model' or ''
+    return ('  %sWeights: %s (%s)%s|r'):format(ns.ColourCode('muted'), name, how, model)
+end
+ns.StatusWeightsText = WeightsText
 local function StatusText()
     local c = C()
     local acting = {}
     if c.autoEquip then acting[#acting + 1] = 'equips upgrades' end
     if c.autoQuest then acting[#acting + 1] = 'picks quest rewards' end
     if c.autoRoll then acting[#acting + 1] = 'rolls on loot' end
-    if ns.AutoGearActive() then return '|cffffc733Marks only: AutoGear is enabled|r' end
-    if #acting == 0 then return '|cffffc733Marks only: every automatic action is off|r' end
-    if ns.LevellingCapped() then return ('|cffffc733Marks only: level %d (Levelling Mode)|r'):format(ns.MAX_LEVEL) end
-    return '|cff40ff59Active: ' .. table.concat(acting, ', ') .. '|r'
+    local caution = ns.ColourCode('caution')
+    local text
+    if ns.AutoGearActive() then text = caution .. 'Marks only: AutoGear is enabled|r'
+    elseif #acting == 0 then text = caution .. 'Marks only: every automatic action is off|r'
+    elseif ns.LevellingCapped() then text = caution .. ('Marks only: level %d (Levelling Mode)|r'):format(ns.MAX_LEVEL)
+    else text = ns.ColourCode('upgrade') .. 'Active: ' .. table.concat(acting, ', ') .. '|r' end
+    return text .. WeightsText()
 end
+ns.StatusText = StatusText
 
 local function AutomationPage(W, parent, y)
     local equipOff = Needs('autoEquip')
@@ -124,9 +135,9 @@ local function AutomationPage(W, parent, y)
     y = Header(W, parent, 'AUTOMATIC ACTIONS', y)
     y = Row(W, parent, y,
         HardToggle('Auto-Equip Upgrades', 'autoEquip', 'Equips better gear from your bags out of combat. Off: upgrades are only marked.'),
-        HardToggle('Auto-Pick Quest Rewards', 'autoQuest', 'Takes the best upgrade, or the highest vendor value when nothing is an upgrade. Choices that include non-gear items stay yours.'))
+        HardToggle('Auto-Pick Quest Rewards', 'autoQuest', 'Takes the best upgrade, or the highest vendor value when nothing is an upgrade. Choices that include non-gear items stay yours. Hold Shift as the reward window opens to choose yourself.'))
     y = Row(W, parent, y,
-        HardToggle('Auto-Roll on Loot', 'autoRoll', 'Need on upgrades you may Need on, Greed on everything else.'),
+        HardToggle('Auto-Roll on Loot', 'autoRoll', 'Need on upgrades you may Need on, Greed on other gear. Non-gear loot is your roll unless Non-Gear Loot Rolls says otherwise.'),
         HardToggle('Levelling Mode', 'levellingOnly', 'Automatic actions run only at levels 1-59. From level 60 Gear only marks, and stops listening to bag and loot events.'))
     y = Row(W, parent, y,
         {type = 'dropdown', text = 'Auto-Equip Up To', values = RARITIES, order = RARITY_ORDER,
@@ -136,8 +147,10 @@ local function AutomationPage(W, parent, y)
             setValue = function(v)
                 if type(v) == 'number' and RARITIES[v] then C().autoEquipMaxQuality = v; Apply() end
             end},
-        Toggle('Auto-Equip Empty Bag Upgrades','autoBags','Allows empty bag and suitable quiver upgrades. Occupied bags remain manual.',equipOff,'Auto-Equip Upgrades'))
+        Toggle('Rarity Cap: Bind on Equip Only', 'rarityCapBoEOnly', 'On: the rarity cap holds back only items you could still sell or trade (Bind on Equip or unbound). Soulbound and Bind on Pickup upgrades, such as a blue quest reward, are equipped and Needed whatever their rarity.',
+            function() local c = C(); return not (c.autoEquip or c.autoRoll) end, 'Auto-Equip Upgrades or Auto-Roll on Loot'))
     y = Row(W, parent, y,
+        Toggle('Auto-Equip Empty Bag Upgrades','autoBags','Allows empty bag and suitable quiver upgrades. Occupied bags remain manual.',equipOff,'Auto-Equip Upgrades'),
         Toggle('Auto-Equip Better Ammo','autoAmmo','Puts the best usable arrows or bullets for your ranged weapon in the ammo slot, including a higher tier the moment you reach its level.',equipOff,'Auto-Equip Upgrades'))
     y = Spacer(W, parent, y)
     y = Header(W, parent, 'POP-UPS', y)
@@ -153,22 +166,51 @@ local function AutomationPage(W, parent, y)
     y = Spacer(W, parent, y)
     y = Header(W, parent, 'BIND ON EQUIP', y)
     y = Row(W, parent, y,
-        Toggle('Auto-Equip Bind-on-Equip', 'equipBoE', 'Lets auto-equip use bind-on-equip items up to your Auto-Equip rarity. Off: they stay in your bags, marked.', equipOff, 'Auto-Equip Upgrades'),
+        Toggle('Auto-Equip Bind-on-Equip', 'equipBoE', 'Lets auto-equip use bind-on-equip items up to Bind on Equip Up To (and your Auto-Equip rarity). Off: they stay in your bags, marked.', equipOff, 'Auto-Equip Upgrades'),
         Toggle('Auto-Confirm Bind Prompt', 'confirmEquipBinds', 'Accepts the bind prompt, but only for the item Gear is equipping. Off: the prompt waits for you.', Needs('autoEquip','equipBoE'), 'Auto-Equip Bind-on-Equip'))
+    y = Row(W, parent, y,
+        {type = 'dropdown', text = 'Bind on Equip Up To', values = RARITIES, order = RARITY_ORDER,
+            tooltip = 'Bind-on-equip upgrades are equipped only at this rarity and below; rarer ones stay in your bags, marked, to sell or trade. Auto-Equip Up To still applies.',
+            disabled = Needs('autoEquip','equipBoE'), disabledTooltip = 'Auto-Equip Bind-on-Equip',
+            getValue = function() return C().equipBoEMaxQuality end,
+            setValue = function(v) if type(v) == 'number' and RARITIES[v] then C().equipBoEMaxQuality = v; Apply() end end})
     y = Spacer(W, parent, y)
     local rollOff = Needs('autoRoll')
     y=Header(W,parent,'LOOT ROLLS',y)
     y=Row(W,parent,y,Toggle('Need on Upgrades','rollNeedUpgrades','Auto-Roll chooses Need only for supported upgrades. Off: upgrades remain a manual choice.',rollOff,'Auto-Roll on Loot'),
         Toggle('Greed on Other Loot','rollGreedOthers','Auto-Roll chooses Greed only when the roll permits it. Off: other loot remains a manual choice.',rollOff,'Auto-Roll on Loot'))
+    -- Roll etiquette (review G2): each rule off by default; a blocked upgrade is Greed, or yours to roll.
+    local needOff = Needs('autoRoll', 'rollNeedUpgrades')
+    local armor = ns.Engine.ArmorType and ns.Engine.ArmorType()
+    local main = ns.Engine.MainStat and ns.Engine.MainStat()
+    y=Row(W,parent,y,Slider('Minimum Need Gain','rollMinGain',0,50,1,'Need only when the upgrade adds at least this percent to the score of the item it replaces. 0: any gain. Smaller upgrades are Greed (with Greed on Other Loot) or left to you. Filling an empty slot always counts.',false,needOff,'Need on Upgrades'),
+        Drop('Non-Gear Loot Rolls','rollNonGear',{player='Player Roll',greed='Greed',need='Need'},{'player','greed','need'},
+            'Loot that is not gear (cloth, reagents, food). Player Roll (default): every non-gear roll is yours. Greed or Need: rolled for you up to Non-Gear Up To; Need only where the roll allows it. Mounts, pets, recipes, quest items and keys are always your roll.',rollOff,'Auto-Roll on Loot'))
+    y=Row(W,parent,y,{type='dropdown',text='Non-Gear Up To',values=RARITIES,order=RARITY_ORDER,
+            tooltip='Non-gear loot of this rarity and below is rolled for you; rarer loot is your roll.',
+            disabled=function() local c=C();return not c.autoRoll or c.rollNonGear=='player' end,disabledTooltip='Non-Gear Loot Rolls: Greed or Need',
+            getValue=function() return C().rollNonGearMaxQuality end,
+            setValue=function(v) if type(v)=='number' and RARITIES[v] then C().rollNonGearMaxQuality=v;Apply() end end})
+    y=Row(W,parent,y,Toggle('Need Only My Armor Type','rollNeedArmorType',('Need only on cloth, leather, mail or plate you are meant to wear (yours now: %s). Hunters and Shamans wear Mail from 40, Warriors and Paladins Plate from 40. Cloaks, jewelry and weapons are not affected.'):format(armor and ns.Engine.ARMOR_NAMES[armor] or 'unknown'),needOff,'Need on Upgrades'),
+        Toggle('Need Only My Main Stat','rollNeedMainStat',('Need only on gear that has your main stat (now %s), or no Strength, Agility or Intellect at all.'):format(main or 'unknown'),needOff,'Need on Upgrades'))
     y=Row(W,parent,y,Toggle('Auto-Confirm Roll Prompt','confirmLootRolls','Accepts the bind prompt only for a Need or Greed roll Gear made. Off: confirm it yourself.',rollOff,'Auto-Roll on Loot'),
-        Toggle('Chat Messages', 'chat', 'One line in chat for each automatic action.'))
+        -- Review G13: never reported twice. A pop-up card replaces the chat line.
+        Toggle('Chat Messages', 'chat', 'A chat line for each automatic action that shows no pop-up card. With Action Pop-Ups on, the card replaces the chat line.'))
     if ns.AutoGearActive() then
         y = Spacer(W, parent, y)
         y = Header(W, parent, 'AUTOGEAR', y)
+        local copied = ns.Account().migrationSummary
+        local copiedText = S.Table(copied) and S.Number(copied.scales) and S.Number(copied.locks)
+            and (' Gear copied %d of its weight scales; %d slot locks wait in Equipment Rules.'):format(copied.scales, copied.locks) or ''
         y = Row(W, parent, y, {type = 'labeledButton', text = 'AutoGear is enabled, so Gear only marks', buttonText = 'Disable AutoGear',
-            tooltip = 'Turns AutoGear off for this character and reloads. Its imported weights were copied to Gear.',
+            tooltip = 'Turns AutoGear off for this character and reloads.' .. copiedText,
             onClick = function()
-                EUI:ShowConfirmPopup({title = 'Disable AutoGear', message = 'Gear replaces AutoGear. Disable AutoGear and reload?',
+                -- Review G10: say what AutoGear was doing and which Gear toggle takes over.
+                local lines = ns.AutoGearSummary()
+                local message = 'Gear replaces AutoGear. Disable AutoGear and reload?\n\n' ..
+                    (#lines > 0 and table.concat(lines, '\n') or 'AutoGear has no automatic actions on for this character.') ..
+                    '\n\nGear keeps its own settings; nothing is switched on for you.'
+                EUI:ShowConfirmPopup({title = 'Disable AutoGear', message = message,
                     confirmText = 'Disable and Reload', cancelText = 'Cancel', reload = true,
                     onConfirm = function()
                         local disable = C_AddOns and C_AddOns.DisableAddOn or _G.DisableAddOn
@@ -199,12 +241,16 @@ local function WeightsPage(W, parent, y)
     specs[''] = 'Detected (' .. ns.Weights.DetectedSpec(class) .. ')'
     for _, spec in ipairs(ns.Weights.Specs(class)) do specs[spec] = spec; order[#order + 1] = spec end
     y = Header(W, parent, 'WEIGHTS IN USE', y)
+    -- Review G9: Phase only switches your own weights; say so, and say when it changes nothing now.
+    local inUse = select(2, ns.Weights.ClassSpec())
+    local phaseTip = 'By Level: Levelling weights below the level on the right, Endgame from it. Phase switches only your own weights: the built-in weights and the Hunter model are the same in every phase.' ..
+        (ns.Weights.HasCustomPhases(class or 'UNKNOWN', inUse) and '' or ' You have no weights of your own for this spec, so Phase has no effect now.')
     y = Row(W, parent, y,
         {type = 'dropdown', text = 'Spec', values = specs, order = order,
             getValue = function() return C().spec or '' end,
             setValue = function(v) C().spec = v ~= '' and v or nil; Rebuild() end},
         {type = 'dropdown', text = 'Phase', values = PHASES, order = {'auto', 'levelling', 'endgame'},
-            tooltip = 'By Level: Levelling weights below the level on the right, Endgame from it.',
+            tooltip = phaseTip,
             getValue = function() return C().phase end, setValue = function(v) C().phase = v; Rebuild() end})
     local sources, sourceOrder = Sources()
     y = Row(W, parent, y,
@@ -232,8 +278,11 @@ local function WeightsPage(W, parent, y)
         return {type = 'input', text = ns.Weights.LABELS[stat] or stat, inputWidth = 70,
             getValue = function() return ('%.3g'):format(current[stat] or 0) end,
             setValue = function(text)
+                -- The box commits on focus loss too (review GU3): unchanged text must not create custom weights.
+                if text == ('%.3g'):format(current[stat] or 0) then return end
                 local v = tonumber(text)
                 if not S.Number(v) or v < 0 or v>100000 then ns.Say('Enter a finite weight from 0 to 100000.',true);return end
+                if S.Number(current[stat]) and math.abs(v - current[stat]) < 1e-9 then return end
                 ns.Weights.Custom(class, spec, phase, true)[stat] = v
                 Rebuild()
             end}
@@ -296,9 +345,9 @@ local function MarkersPage(W, parent, y)
     y = Header(W, parent, 'MARKERS', y)
     y = Row(W, parent, y,
         Toggle('Tooltip Score', 'tooltip', 'One line on gear tooltips: the upgrade amount, or the score when it is not an upgrade.'),
-        Toggle('Quest Reward Borders', 'markQuest', 'Upgrade colour on the best reward; greed colour on the highest vendor value when nothing is an upgrade.'))
+        Toggle('Quest Reward Borders', 'markQuest', 'Upgrade color on the best reward; greed color on the highest vendor value when nothing is an upgrade.'))
     y=Row(W,parent,y,Toggle('Bag Upgrade Icons','markBags','Marks upgrades in Blizzard and Ellesmere bags, including above your automatic rarity limit.'),
-        Toggle('Loot Roll Marks','markRoll','Upgrade colour for a supported upgrade; greed colour for other loot.'))
+        Toggle('Loot Roll Marks','markRoll','Upgrade color for a supported upgrade; greed color for other loot.'))
     y=Row(W,parent,y,Toggle('Character Slot Marks','markCharacter','Marks character sheet slots that have an upgrade in your bags.'))
     y = Spacer(W, parent, y)
     local off = function() local c = C(); return not (c.markQuest or c.markBags or c.markRoll or c.markCharacter) end
@@ -307,17 +356,17 @@ local function MarkersPage(W, parent, y)
     local styleRow
     y, styleRow = Row(W,parent,y,
         Drop('Upgrade Marker Style','markerStyle',{border='Native Border',arrow='Upgrade Arrow',diamond='Diamond',plus='Plus'},{'border','arrow','diamond','plus'},
-            'How an upgrade is marked. The swatch sets its colour; the cog places icon styles on the slot.',off,offTip),
+            'How an upgrade is marked. The swatch sets its color; the cog places icon styles on the slot.',off,offTip),
         Drop('Greed Marker Style','greedMarkerStyle',{border='Native Border',coin='Gold Coin',diamond='Diamond',plus='Plus'},{'border','coin','diamond','plus'},
-            'How greed loot and the best vendor reward are marked. The swatch sets its colour.',off,offTip))
+            'How greed loot and the best vendor reward are marked. The swatch sets its color.',off,offTip))
     local left, right = Inline(styleRow, 'left'), Inline(styleRow, 'right')
     if left and EUI.BuildInlineSwatches then
-        S.Call('upgrade swatch', EUI.BuildInlineSwatches, left, {Swatch('upgrade', 'Upgrade Colour')}, {disabled = off, disabledTooltip = offTip})
+        S.Call('upgrade swatch', EUI.BuildInlineSwatches, left, {Swatch('upgrade', 'Upgrade Color')}, {disabled = off, disabledTooltip = offTip})
     end
     if left and EUI.BuildInlineCog then
         S.Call('marker cog', EUI.BuildInlineCog, left, {title = 'Icon Placement', disabled = off, disabledTooltip = offTip,
             rows = {
-                {type = 'dropdown', label = 'Icon Position', values = {TOPLEFT='Top Left',TOPRIGHT='Top Right',BOTTOMLEFT='Bottom Left',BOTTOMRIGHT='Bottom Right',CENTER='Centre'},
+                {type = 'dropdown', label = 'Icon Position', values = {TOPLEFT='Top Left',TOPRIGHT='Top Right',BOTTOMLEFT='Bottom Left',BOTTOMRIGHT='Bottom Right',CENTER='Center'},
                     order = {'TOPLEFT','TOPRIGHT','BOTTOMLEFT','BOTTOMRIGHT','CENTER'},
                     get = function() return C().markerPosition end, set = function(v) C().markerPosition = v; Apply(true) end},
                 {type = 'slider', label = 'X Offset', min = -32, max = 32, step = 1,
@@ -327,16 +376,41 @@ local function MarkersPage(W, parent, y)
             }})
     end
     if right and EUI.BuildInlineSwatches then
-        S.Call('greed swatch', EUI.BuildInlineSwatches, right, {Swatch('greed', 'Greed and Vendor Colour')}, {disabled = off, disabledTooltip = offTip})
+        S.Call('greed swatch', EUI.BuildInlineSwatches, right, {Swatch('greed', 'Greed and Vendor Color')}, {disabled = off, disabledTooltip = offTip})
     end
     y=Row(W,parent,y,Slider('Icon Size','markerSize',8,48,1,'Size of icon markers; the native border scales with it.',false,off,offTip),
         Slider('Marker Opacity','markerOpacity',10,100,5,'Opacity of every Gear marker.',true,off,offTip))
-    y=Row(W,parent,y,{type='labeledButton',text='Marker Appearance',buttonText='Reset',tooltip='Returns marker styles, colours, size, opacity and placement to their defaults.',
+    y=Row(W,parent,y,{type='labeledButton',text='Marker Appearance',buttonText='Reset',tooltip='Returns marker styles, colors, size, opacity and placement to their defaults.',
         onClick=function()
             local c=C();c.markerColours={};for _,key in ipairs({'markerStyle','greedMarkerStyle','markerSize','markerOpacity','markerPosition','markerOffsetX','markerOffsetY'}) do c[key]=ns.CHAR_DEFAULTS[key] end;Rebuild()
-        end})
+        end},
+        -- Review G14: the green border matches the uncommon-quality glow. Shape and hue both change.
+        {type='labeledButton',text='Color-Blind Markers',buttonText='Apply',
+            tooltip='Upgrades get a blue arrow and greed an orange coin, instead of a green border that looks like the uncommon-quality glow. Tooltip, stat and pop-up colors change to match. Marker Appearance and Text Colors Reset undo it.',
+            onClick=function() ns.ApplyColourBlindPreset();Rebuild() end})
+    -- Review G12: every text color is a token with its own picker.
+    y=Spacer(W,parent,y)
+    y=Header(W,parent,'TEXT COLORS',y)
+    local function Colour(key,text,tip)
+        return {type='colorpicker',text=text,hasAlpha=false,tooltip=tip,
+            getValue=function() local r,g,b=ns.Colour(key);return r,g,b,1 end,
+            setValue=function(r,g,b)
+                if not (S.Number(r) and S.Number(g) and S.Number(b)) then return end
+                C().textColours[key]={math.max(0,math.min(1,r)),math.max(0,math.min(1,g)),math.max(0,math.min(1,b))}
+                if ns.StoreProfile then ns.StoreProfile() end
+            end}
+    end
+    y=Row(W,parent,y,Colour('upgrade','Upgrade Text','Tooltip upgrade lines and the Active status.'),
+        Colour('muted','Not an Upgrade Text','Tooltip lines for gear that is not an upgrade, and the weights note on the status line.'))
+    y=Row(W,parent,y,Colour('greed','Greed and Vendor Pop-Ups','Pop-up cards for Greed rolls and best-vendor-value quest rewards.'),
+        Colour('skill','Level and Skill Notes','"Upgrade at level N" and weapon skill lines in tooltips.'))
+    y=Row(W,parent,y,Colour('gain','Stat Gain','Stats that go up on pop-up cards.'),Colour('loss','Stat Loss','Stats that go down on pop-up cards.'))
+    y=Row(W,parent,y,Colour('caution','Marks Only Status','The status line while Gear only marks.'),
+        {type='labeledButton',text='Text Colors',buttonText='Reset',tooltip='Returns every text color to its default.',
+            onClick=function() C().textColours={};if ns.StoreProfile then ns.StoreProfile() end;Rebuild(false) end})
     return y
 end
+
 
 -- Live preview above the Markers page: one upgrade and one greed sample, painted by the real marker code.
 local preview = {}
@@ -467,7 +541,7 @@ local function ModelPage(W,parent,y)
         {type='labeledButton',text='Rating Conversions',buttonText='Set Conversions',tooltip='Rating points per 1% for each stat.',
             disabled=function() return C().ratingUnits~='rating' end,disabledTooltip='Rating Units: Rating',onClick=function()
         EUI:ShowInputPopup({title='Rating Conversions',message='Verified rating points per 1%. Example: Crit=14, Hit=10. Use current Forever level/build values.',confirmText='Save',onConfirm=function(text)
-            local parsed,why=ns.Weights.Parse(text)
+            local parsed,why=ns.Weights.Parse(text,1) -- one conversion is enough (review GU7)
             if not parsed then ns.Say(why,true);return end
             local values={}
             for key,value in pairs(parsed) do if ({Crit=true,Hit=true,SpellCrit=true,SpellHit=true,Haste=true,Dodge=true,Parry=true,Block=true})[key] and S.Number(value) and value>0 then values[key]=value end end
@@ -507,16 +581,32 @@ local function ModelPage(W,parent,y)
         Toggle('Include Locks and Never Equip','profileIncludeRules','Copies character equipment rules with the Ellesmere profile. Off: rules stay on this character.'))
     return y
 end
-local PREBUILD_LABELS = {
-    Automation={'Auto-Equip Upgrades','Auto-Pick Quest Rewards','Auto-Roll on Loot','Levelling Mode','Auto-Equip Up To','Auto-Equip Empty Bag Upgrades','Auto-Equip Better Ammo',
-        'Action Pop-Ups','Upgrade Found Pop-Ups','Pop-Up Duration','Pop-Up Preview','Auto-Equip Bind-on-Equip','Auto-Confirm Bind Prompt','Need on Upgrades','Greed on Other Loot','Auto-Confirm Roll Prompt','Chat Messages'},
-    ['Stat Weights']={'Spec','Phase','Score Source','Endgame From Level','Weight Scale','Share These Weights'},
-    Markers={'Tooltip Score','Quest Reward Borders','Bag Upgrade Icons','Loot Roll Marks','Character Slot Marks','Upgrade Marker Style',
-        'Greed Marker Style','Icon Size','Marker Opacity','Marker Appearance'},
-    ['Equipment Rules']={'Never Equip an Item','Never Equip This Variant','AutoGear Slot Locks'},
-    Model={'Comparison Model','Weapon Preference','Fight Length (Seconds)','Melee Participation','Use Effect Availability','Incoming Hits per Second',
-        'Automate With Proc Estimates','Target Creature','Rating Units','Rating Conversions','Proc Rate Override','Model Report','Pet','Multi-Shot Targets',
-        'Talent Ranks','Include Weight Library','Include Locks and Never Equip'},
+-- Search index, one section per real header (suite review SC-5): a search result opens the page
+-- and scrolls to its section. hunter=true groups exist for Hunters only.
+local PREBUILD_SECTIONS = {
+    ['Automation'] = {
+        {'AUTOMATIC ACTIONS', {'Auto-Equip Upgrades', 'Auto-Pick Quest Rewards', 'Auto-Roll on Loot', 'Levelling Mode', 'Auto-Equip Up To', 'Rarity Cap: Bind on Equip Only', 'Auto-Equip Empty Bag Upgrades', 'Auto-Equip Better Ammo'}},
+        {'POP-UPS', {'Action Pop-Ups', 'Upgrade Found Pop-Ups', 'Pop-Up Duration', 'Pop-Up Preview'}},
+        {'BIND ON EQUIP', {'Auto-Equip Bind-on-Equip', 'Auto-Confirm Bind Prompt', 'Bind on Equip Up To'}},
+        {'LOOT ROLLS', {'Need on Upgrades', 'Greed on Other Loot', 'Minimum Need Gain', 'Non-Gear Loot Rolls', 'Non-Gear Up To', 'Need Only My Armor Type', 'Need Only My Main Stat', 'Auto-Confirm Roll Prompt', 'Chat Messages'}},
+    },
+    ['Stat Weights'] = {
+        {'WEIGHTS IN USE', {'Spec', 'Phase', 'Score Source', 'Endgame From Level', 'Weight Scale', 'Share These Weights'}},
+    },
+    ['Markers'] = {
+        {'MARKERS', {'Tooltip Score', 'Quest Reward Borders', 'Bag Upgrade Icons', 'Loot Roll Marks', 'Character Slot Marks'}},
+        {'APPEARANCE', {'Upgrade Marker Style', 'Greed Marker Style', 'Icon Size', 'Marker Opacity', 'Marker Appearance', 'Color-Blind Markers'}},
+        {'TEXT COLORS', {'Upgrade Text', 'Not an Upgrade Text', 'Greed and Vendor Pop-Ups', 'Level and Skill Notes', 'Stat Gain', 'Stat Loss', 'Marks Only Status', 'Text Colors'}},
+    },
+    ['Equipment Rules'] = {
+        {'NEVER EQUIP', {'Never Equip an Item', 'Never Equip This Variant', 'AutoGear Slot Locks'}},
+    },
+    ['Model'] = {
+        {'MODEL ASSUMPTIONS', {'Comparison Model', 'Weapon Preference', 'Fight Length (Seconds)', 'Melee Participation', 'Use Effect Availability', 'Incoming Hits per Second', 'Automate With Proc Estimates', 'Target Creature', 'Rating Units', 'Rating Conversions'}},
+        {'PER-ITEM PROC RATES', {'Proc Rate Override'}},
+        {'HUNTER MODEL', {'Model Report', 'Pet', 'Multi-Shot Targets', 'Talent Ranks'}, hunter=true},
+        {'ELLESMERE PROFILE', {'Include Weight Library', 'Include Locks and Never Equip'}},
+    },
 }
 local PAGES = {Automation = AutomationPage, ['Stat Weights'] = WeightsPage, Markers = MarkersPage, ['Equipment Rules'] = EquipmentRulesPage,['Model'] = ModelPage}
 EUI.RegisterPlugin(ADDON, {label = 'Gear', position = 'bottom', modules = {{
@@ -529,10 +619,15 @@ EUI.RegisterPlugin(ADDON, {label = 'Gear', position = 'bottom', modules = {{
         if not (W and build) then return 0 end
         if EUI.IsSearchPrebuild and EUI.IsSearchPrebuild() then
             local y=yOffset or 0
-            y=Header(W,parent,page,y)
-            -- Each page indexes only its own labels, so a search result opens the right page (audit status N06).
-            local names=PREBUILD_LABELS[page] or {}
-            for i=1,#names,2 do y=Row(W,parent,y,{type='label',text=names[i]},names[i+1] and {type='label',text=names[i+1]} or nil) end
+            -- Each page indexes only its own labels, under their real section headers (audit N06, SC-5).
+            local hunter=select(2,S.Read(UnitClass,'player'))=='HUNTER'
+            for _,group in ipairs(PREBUILD_SECTIONS[page] or {}) do
+                if hunter or not group.hunter then
+                    y=Header(W,parent,group[1],y)
+                    local names=group[2]
+                    for i=1,#names,2 do y=Row(W,parent,y,{type='label',text=names[i]},names[i+1] and {type='label',text=names[i+1]} or nil) end
+                end
+            end
             return math.abs(y)
         end
         if parent then parent._showRowDivider = true end

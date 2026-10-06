@@ -140,7 +140,9 @@ SlashCmdList.FHKTIMING = function(input)
             Timing.ResetClock()
         else
             local value = tonumber(argument)
-            if value and value >= 0 and value <= 2 then
+            -- The same bounds as the saved settings (review C7), or a value would not survive /reload.
+            local minimum = command == 'plant' and 0 or 0.1
+            if value and value >= minimum and value <= 2 then
                 settings[command .. 'Seconds'] = value
                 if command == 'lockout' then
                     settings.lockoutMode = 'fixed'

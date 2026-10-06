@@ -963,8 +963,9 @@ local function Measure(unit)
             min =
                 shot.min,
 
+            -- The Sniper Shot bonus counts here too (review R3), as on the display.
             max =
-                shot.max,
+                shot.max+SniperBonus(),
 
             inside =
                 SpellRange(
@@ -1024,12 +1025,32 @@ local function Measure(unit)
 end
 
 
+-- Bar, cursor, aspect and plate code all ask about the target many times a second
+-- (review R5): one measurement per unit and GUID per 0.05 s.
+local rangeCache={}
 function NS.GetUnitRange(unit)
-    local state, text, yards = Measure(unit or 'target')
+    unit=unit or 'target'
+    local now=GetTime and GetTime() or 0
+    local guid=UnitGUID and UnitGUID(unit)
+    if issecretvalue and issecretvalue(guid) then guid=nil end
+    local hit=rangeCache[unit]
+    if guid and hit and hit.guid==guid and now>=hit.at and now-hit.at<.05 then return hit.value end
+    local state, text, yards = Measure(unit)
     local title, exact, bracket, color, resolved = Present(state, text, yards)
-    return {state=resolved,title=title,exact=exact,bracket=bracket,color=color,
+    local value={state=resolved,title=title,exact=exact,bracket=bracket,color=color,
         minimum=ShotMinimum(),maximum=ShotMaximum()}
+    if guid then rangeCache[unit]={guid=guid,at=now,value=value} else rangeCache[unit]=nil end
+    return value
 end
+function NS.ResetEllesmereRangeCache() for k in pairs(rangeCache) do rangeCache[k]=nil end end
 function NS.GetTargetRange() return NS.GetUnitRange('target') end
 eventFrame:RegisterEvent('PLAYER_LOGIN'); eventFrame:RegisterEvent('SPELLS_CHANGED')
-eventFrame:SetScript('OnEvent', Discover)
+-- SPELLS_CHANGED comes in bursts (review R8): one spellbook walk per frame.
+local discoverQueued=false
+eventFrame:SetScript('OnEvent', function(_, event)
+    NS.ResetEllesmereRangeCache()
+    if event ~= 'SPELLS_CHANGED' or not (C_Timer and C_Timer.After) then Discover(); return end
+    if discoverQueued then return end
+    discoverQueued=true
+    C_Timer.After(0, function() discoverQueued=false; Discover(); NS.ResetEllesmereRangeCache() end)
+end)

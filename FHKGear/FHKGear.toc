@@ -2,9 +2,9 @@
 ## Title: FHK Gear
 ## Notes: Upgrade scores, quest reward choice and auto-equip for levelling, as a Gear tab in EllesmereUI. Adapted from AutoGear (CC BY-NC-SA 4.0).
 ## Author: FHK (adapted from AutoGear by Synthetikaryote and BujuArena)
-## Version: 0.5.1
+## Version: 0.5.3
 ## Dependencies: EllesmereUI
-## OptionalDeps: ForeverGear, AutoGear
+## OptionalDeps: ForeverGear, AutoGear, EllesmereUIBags
 ## SavedVariables: FHKGearDB
 ## SavedVariablesPerCharacter: FHKGearCharDB
 ## X-License: CC BY-NC-SA 4.0

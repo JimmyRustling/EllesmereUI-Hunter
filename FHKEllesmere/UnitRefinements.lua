@@ -24,6 +24,23 @@ local function PublicNumber(v)
     return not (issecretvalue and issecretvalue(v)) and type(v) == 'number'
 end
 local function Dark() return FHK.EllesmereDarkMode and FHK.EllesmereDarkMode() or false end
+-- Publishing rule (suite review SF-8): looks that replace an Ellesmere option of the same
+-- element (white combat block, edge badges, happiness square) are on by themselves only on
+-- the owner's install. A value the player saved is always kept.
+local function Owner()
+    if FHK.EllesmerePersonalSetup then return FHK.EllesmerePersonalSetup() == true end
+    return _G.ForeverHunterKeysNS ~= nil
+end
+local FRAME_DEFAULTS = {combatIconStyle=function(owner) return owner and 'block' or 'native' end,
+    statusIconBadge=function(owner) return owner end, petMoodIcon=function(owner) return owner end}
+function FHK.EllesmereFrameSetting(key)
+    local v
+    if type(FHKEllesmereDB) == 'table' then v = FHKEllesmereDB[key] end
+    if v ~= nil then return v end
+    local default = FRAME_DEFAULTS[key]
+    if default then return default(Owner()) end
+end
+local FrameSetting = FHK.EllesmereFrameSetting
 local function OwnUnit(unit)
     if (issecretvalue and issecretvalue(unit)) or type(unit)~='string' then return false end
     if unit=='player' or unit=='pet' then return true end
@@ -103,8 +120,20 @@ function FHK.PaintEllesmereHealthText(fs, unit, context, key)
     if FHK.ApplyEllesmereCueText then FHK.ApplyEllesmereCueText(fs,'bar') end
     if not OwnUnit(unit) then
         if fs._fhkTint then fs:SetVertexColor(1,1,1,1);fs._fhkTint=nil end
-        if not (FHKEllesmereDB and FHKEllesmereDB.healthTextColors==false) then fs:SetTextColor(unpack(white)) end
-        return false -- enemy values retain native colour, with the stronger outline
+        -- Nameplates: white reads over our warning fills. Unit frames keep Ellesmere's own
+        -- colour (class or custom right text) for every unit that is not yours (review U3).
+        -- Only over our dark fill (suite review SF-5): otherwise the plate's Text Slot Color
+        -- stays Ellesmere's. Written on change only, never every sweep.
+        if context=='nameplates' and Dark() and not (FHKEllesmereDB and FHKEllesmereDB.healthTextColors==false) then
+            local r,g,b
+            if fs.GetTextColor then r,g,b=fs:GetTextColor() end
+            -- The client stores colours as floats: compare within a small tolerance.
+            if not (PublicNumber(r) and PublicNumber(g) and PublicNumber(b)) or math.abs(r-white[1])>.004 or
+                math.abs(g-white[2])>.004 or math.abs(b-white[3])>.004 then
+                fs:SetTextColor(white[1],white[2],white[3],1)
+            end
+        end
+        return false
     end
     local off = FHKEllesmereDB and FHKEllesmereDB.healthTextColors == false
     if not off and context and unit and UnitExists(unit) and FillsWarn(context, key, unit) then
@@ -369,7 +398,7 @@ local function StylePetMood(h)
         h._fhkHappyHidden = hidden
     end
     local mood
-    if not (FHKEllesmereDB and FHKEllesmereDB.petMoodIcon == false) then mood = Mood() end
+    if FrameSetting('petMoodIcon') ~= false then mood = Mood() end
     local square = not (FHKEllesmereDB and FHKEllesmereDB.petMoodStyle == 'paw')
     PaintMoodSquare(h, square and mood or nil)
     if square and mood then return end
@@ -395,7 +424,7 @@ FHK.StyleEllesmerePetMood = StylePetMood
 local function PlacePetMood(pf, uf)
     local h = pf and pf._petHappy
     local s = uf and uf.db and uf.db.profile and uf.db.profile.pet
-    if not h or not s or (FHKEllesmereDB and FHKEllesmereDB.statusIconBadge == false) then return end
+    if not h or not s or FrameSetting('statusIconBadge') == false then return end
     if (s.happinessAlign or 'right') ~= 'right' then return end
     local size, x, y = s.happinessSize or 20, s.happinessX or 0, s.happinessY or 0
     if not PublicNumber(size) or not PublicNumber(x) or not PublicNumber(y) then return end
@@ -451,8 +480,12 @@ local function PaintDarkLine(bar, state, dark)
     local wanted = dark and (not state.resource or state.context == 'unitframes') and
         not (FHKEllesmereDB and FHKEllesmereDB.darkHealthLine == false)
     local unit = state.unit
-    local gone = unit and UnitIsDeadOrGhost and UnitIsDeadOrGhost(unit)
-    if not wanted or not unit or not UnitExists(unit) or (not (issecretvalue and issecretvalue(gone)) and gone == true) then
+    if not wanted or not unit then
+        if line then line:Hide() end
+        return
+    end
+    local gone = UnitIsDeadOrGhost and UnitIsDeadOrGhost(unit)
+    if not UnitExists(unit) or (not (issecretvalue and issecretvalue(gone)) and gone == true) then
         if line then line:Hide() end
         return
     end
@@ -487,6 +520,9 @@ end
 -- Public threat/target signals only; health amount never changes this hue.
 local function NeutralAggroColor(state)
     local unit=state.unit
+    -- Unit frames only (suite review SF-6): nameplates have Ellesmere's own in-combat
+    -- neutral colour, which this would repaint on the same frame.
+    if state.context~='unitframes' then return end
     if state.resource or OwnUnit(unit) or type(unit)~='string' or not UnitReaction then return end
     local reaction=UnitReaction(unit,'player')
     if not PublicNumber(reaction) or reaction~=4 then return end
@@ -518,9 +554,107 @@ local function NeutralAggroColor(state)
     local r,g,b=c.r or c[1],c.g or c[2],c.b or c[3]
     if PublicNumber(r) and PublicNumber(g) and PublicNumber(b) then return r,g,b end
 end
+-- Target of target (review C7): while a hostile target attacks you, its bar takes the On You
+-- colour (aggroYou, the gold nameplate edge); while it attacks your pet, the On Pet colour
+-- (aggroPet, pet green). Fills deepen the bright token for white text; the shipped gold keeps
+-- its hand-tuned fill pair (healthMid) until the player picks another. Restricted reads stay native.
+local function Token(key, fallback)
+    local c = C[key]
+    if type(c) == 'table' and PublicNumber(c[1]) and PublicNumber(c[2]) and PublicNumber(c[3]) then return c end
+    return fallback
+end
+local function ReadableFill(c)
+    if FHK.EllesmereReadableBarFill then
+        local x, y, z = FHK.EllesmereReadableBarFill(c[1], c[2], c[3])
+        if x then return x, y, z end
+    end
+    return c[1], c[2], c[3]
+end
+local function TargetOfTargetFill()
+    local hostile = UnitCanAttack and UnitCanAttack('player', 'target')
+    if (issecretvalue and issecretvalue(hostile)) or hostile ~= true then return end
+    local you = UnitIsUnit('targettarget', 'player')
+    if issecretvalue and issecretvalue(you) then return end
+    if you == true then
+        local saved = type(FHKEllesmereDB) == 'table' and FHKEllesmereDB.hunterColors
+        if type(saved) == 'table' and type(saved.aggroYou) == 'table' then return ReadableFill(Token('aggroYou', {1, .82, 0})) end
+        return ReadableFill(Token('healthMid', {.772, .632, 0}))
+    end
+    if type(FHKEllesmereDB) == 'table' and FHKEllesmereDB.totOnPet == false then return end
+    local pet = UnitIsUnit('targettarget', 'pet')
+    if (issecretvalue and issecretvalue(pet)) or pet ~= true then return end
+    return ReadableFill(Token('aggroPet', {.30, .85, .30}))
+end
+FHK.EllesmereTargetOfTargetFill = TargetOfTargetFill
+-- Ellesmere's own fill options win (suite review SF-1, SF-3): a gradient, Dynamic Health
+-- Color, or a Resource Bars threshold or band colouring owns the fill, so ours steps aside
+-- and never writes it (a flat write would wipe the gradient Ellesmere caches as applied).
+local function UFSettings(bar, state)
+    local uf = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIUnitFrames
+    local p = uf and uf.db and uf.db.profile
+    if type(p) ~= 'table' then return end
+    local key = rawget(bar, '_euiUnitKey')
+    if type(key) ~= 'string' then
+        key = state.unit
+        if type(key) ~= 'string' or (issecretvalue and issecretvalue(key)) then return end
+        if key:find('^boss') then key = 'boss' end
+    end
+    local s = p[key]
+    return type(s) == 'table' and s or nil
+end
+local function ERBSettings(key)
+    local resolve = key == 'health' and _G._ERB_ResolveHealthCfg or key == 'primary' and _G._ERB_ResolvePowerCfg
+    local cfg
+    if type(resolve) == 'function' then
+        local ok, value = pcall(resolve)
+        if ok then cfg = value end
+    end
+    if type(cfg) ~= 'table' then
+        local rb = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIResourceBars
+        local p = rb and rb.ERB and rb.ERB.db and rb.ERB.db.profile
+        cfg = type(p) == 'table' and key and p[key] or nil
+    end
+    return type(cfg) == 'table' and cfg or nil
+end
+local function Bands(cfg, entry)
+    local on, bands = entry and entry.multiBandEnabled, entry and entry.bands
+    if on == nil then on = cfg.multiBandEnabled end
+    if type(bands) ~= 'table' or #bands == 0 then bands = cfg.bands end
+    return on == true and type(bands) == 'table' and #bands > 0
+end
+local function NativeOwnsFill(bar, state)
+    local fill = state.texture and bar or (bar.GetStatusBarTexture and bar:GetStatusBarTexture())
+    if type(fill) == 'table' and rawget(fill, '_lgOn') == true then return true end
+    if state.context == 'resourcebars' then
+        local cfg = ERBSettings(state.key)
+        if not cfg then return false end
+        if cfg.gradientEnabled == true then return true end
+        local entry
+        if type(_G._ERB_ResolveThresholdSpecEntry) == 'function' then
+            local ok, value = pcall(_G._ERB_ResolveThresholdSpecEntry, cfg)
+            if ok and type(value) == 'table' then entry = value end
+        elseif cfg.thresholdEnabled == true then return true end -- older suites keep it on the bar
+        if entry and entry.thresholdEnabled ~= false then return true end
+        return Bands(cfg, entry)
+    elseif state.context == 'unitframes' then
+        local s = UFSettings(bar, state)
+        if not s then return false end
+        if state.resource then return s.powerGradientEnabled == true end
+        if s.gradientEnabled == true then return true end
+        local mode = s.healthColorMode
+        return mode ~= nil and mode ~= 'none'
+    end
+    return false
+end
+FHK.EllesmereNativeOwnsFill = NativeOwnsFill
 local function PaintBar(bar, state)
     if not state.painting then PaintDarkLine(bar, state, DarkFor(state)) end
     if state.painting or not state.base then return end
+    if NativeOwnsFill(bar, state) then
+        -- Forget what we painted, so a later switch back to a flat fill repaints from Ellesmere's colour.
+        state.r, state.g, state.b, state.a = nil, nil, nil, nil
+        return
+    end
     local r, g, b = unpack(state.base)
     local unit = state.unit
     if not unit or not UnitExists(unit) then return end
@@ -540,6 +674,16 @@ local function PaintBar(bar, state)
     end
     -- Native Dark Mode owns its flat health and resource fills; warnings stay in the text.
     if nativeDark then enabled=false end
+    -- Plates of other units keep Ellesmere's colour (SF-6, SF-11): nothing more to read.
+    if state.context == 'nameplates' and not enabled then
+        local alpha = state.base[4]
+        if r == state.r and g == state.g and b == state.b and alpha == state.a then return end
+        state.painting = true
+        if state.texture then bar:SetVertexColor(r,g,b,alpha) else bar:SetStatusBarColor(r,g,b,alpha) end
+        state.painting = nil
+        state.r,state.g,state.b,state.a = r,g,b,alpha
+        return
+    end
     local value, max
     if state.resource then
         local kind = ResourceType(unit)
@@ -563,14 +707,8 @@ local function PaintBar(bar, state)
     -- you keeps your class colour, which already reads as you (player, after review).
     if not state.resource and unit == 'targettarget' and state.context == 'unitframes' and
         not (FHKEllesmereDB and FHKEllesmereDB.totOnYou == false) and UnitIsUnit then
-        local you = UnitIsUnit('targettarget', 'player')
-        local hostile = UnitCanAttack and UnitCanAttack('player', 'target')
-        if not (issecretvalue and (issecretvalue(you) or issecretvalue(hostile))) and you == true and hostile == true then
-            local c = C.healthMid or {.772, .632, 0}
-            if FHK.EllesmereReadableBarFill then r, g, b = FHK.EllesmereReadableBarFill(c[1], c[2], c[3])
-            else r, g, b = c[1], c[2], c[3] end
-            enabled = false
-        end
+        local x, y, z = TargetOfTargetFill()
+        if x then r, g, b = x, y, z; enabled = false end
     end
     -- Let the native colour curve evaluate restricted health/resource values.
     -- Its components go straight to allowed setters; Lua never compares them.
@@ -608,25 +746,46 @@ local function RefineBar(bar, unit, resource, texture, context, key)
         FHK.ObserveEllesmerePetBar(bar)
     end
     local state = barStates[bar]
-    if not state then
-        state = {unit=unit,resource=resource,texture=texture,context=context,key=key}; barStates[bar]=state
+    -- Resource Bars Fill Opacity going back to 100 clears the instance setter, and our hook
+    -- with it (suite review SF-2): hook again and start from the colour shown now.
+    if state and state.hooked ~= false and state.hooked ~= nil and rawget(bar, setter) ~= state.hooked then
+        state.gen = (state.gen or 0) + 1
+        state.base, state.curve, state.hooked = nil, nil, nil
+        state.r, state.g, state.b, state.a = nil, nil, nil, nil
+    end
+    if not state or state.hooked == nil then
+        if not state then
+            state = {unit=unit,resource=resource,texture=texture,context=context,key=key,gen=1}; barStates[bar]=state
+        end
         local r,g,b,a = bar[getter](bar)
         if PublicNumber(r) and PublicNumber(g) and PublicNumber(b) then state.base={r,g,b,a} end
+        local gen = state.gen
         hooksecurefunc(bar,setter,function(self,r,g,b,a)
-            if state.painting then return end
+            -- A hook replaced by a newer one (above) stays silent.
+            if state.painting or state.gen ~= gen then return end
+            -- A pooled plate repaints inside SetUnit: read its new unit, not the last sweep's (review U6).
+            if state.plate then state.unit = state.plate.unit end
             -- Preserve each new native class/reaction colour, including recycled plates.
             state.r,state.g,state.b,state.a = nil,nil,nil,nil
             if PublicNumber(r) and PublicNumber(g) and PublicNumber(b) then
                 local old=state.base
                 if not old or old[1]~=r or old[2]~=g or old[3]~=b then state.curve=nil end
-                state.base={r,g,b,a}; PaintBar(self,state)
+                -- Reused: native colour passes arrive with every health event (no garbage).
+                if old then old[1],old[2],old[3],old[4]=r,g,b,a else state.base={r,g,b,a} end
+                PaintBar(self,state)
             else state.base=nil end
         end)
+        state.hooked = rawget(bar, setter) or false
     end
     state.unit,state.resource,state.context,state.key=unit,resource,context,key
     PaintBar(bar,state)
 end
 FHK.RefineEllesmereBar=RefineBar
+-- Own health bars repaint with their value, not on the next sweep (SF-18).
+function FHK.RepaintEllesmereOwnBar(bar)
+    local state=barStates[bar]
+    if state and not state.resource and state.context=='unitframes' and (state.unit=='player' or state.unit=='pet') then PaintBar(bar,state) end
+end
 -- Group bars retain native class/health identity. Deepen public fill colours
 -- under labels without dimming the shared class palette used by names/icons.
 local raidBars=setmetatable({},{__mode='k'})
@@ -799,6 +958,70 @@ local function Settings(ns, frame)
     if type(unit) ~= 'string' then return end
     return ns.db and ns.db.profile and ns.db.profile[unit:match('^boss') and 'boss' or unit]
 end
+-- Resource text pairs (suite review SC-2). Ellesmere's own Unit Frames profile keeps a
+-- native key (Resource # or Resource %), so an export, a player without the companion, or
+-- the companion switched off still shows that value. The pair lives in our own profile store
+-- (ufTextVariants[unit][slot]) and is drawn on top while the native key is its stand-in.
+local TEXT_VARIANTS = {fhk_manaboth='curpp', fhk_manaperfirst='perpp'}
+local POWER_VARIANTS = {perppnum='both'}
+local TEXT_SLOTS = {'leftText', 'rightText', 'centerText', 'extraText'}
+local function VariantStore(write)
+    if type(FHKEllesmereDB) ~= 'table' then
+        if not write then return end
+        FHKEllesmereDB = {}
+    end
+    local t = FHKEllesmereDB.ufTextVariants
+    if type(t) ~= 'table' then
+        if not write then return end
+        t = {}; FHKEllesmereDB.ufTextVariants = t
+    end
+    return t
+end
+local function UnitKeyOf(ns, settings)
+    local p = ns and ns.db and ns.db.profile
+    if type(p) ~= 'table' or type(settings) ~= 'table' then return end
+    for key, s in pairs(p) do if s == settings then return key end end
+end
+-- The variant shown in a slot, or nil when the native key is no longer its stand-in.
+local function TextVariant(unitKey, slot, native)
+    local t = VariantStore()
+    local u = t and unitKey and t[unitKey]
+    local v = type(u) == 'table' and u[slot] or nil
+    if slot == 'powerText' then return POWER_VARIANTS[v] and POWER_VARIANTS[v] == native and v or nil end
+    return TEXT_VARIANTS[v] and TEXT_VARIANTS[v] == native and v or nil
+end
+local function SetTextVariant(unitKey, slot, variant)
+    local t = VariantStore(variant ~= nil)
+    if not t then return end
+    local u = t[unitKey]
+    if type(u) ~= 'table' then
+        if variant == nil then return end
+        u = {}; t[unitKey] = u
+    end
+    u[slot] = variant
+    if next(u) == nil then t[unitKey] = nil end
+end
+-- Moves companion keys an older version wrote into Ellesmere's profile into our store and
+-- writes the closest native key back. Plain table writes: safe in combat, no frame work.
+local function MigrateTextVariants(ns)
+    local p = ns and ns.db and ns.db.profile
+    if type(p) ~= 'table' then return 0 end
+    local moved = 0
+    for unitKey, s in pairs(p) do
+        if type(s) == 'table' and type(unitKey) == 'string' then
+            for _, slot in ipairs(TEXT_SLOTS) do
+                local field = slot .. 'Content'
+                local native = TEXT_VARIANTS[s[field]]
+                if native then SetTextVariant(unitKey, slot, s[field]); s[field] = native; moved = moved + 1 end
+            end
+            local power = POWER_VARIANTS[s.powerTextFormat]
+            if power then SetTextVariant(unitKey, 'powerText', s.powerTextFormat); s.powerTextFormat = power; moved = moved + 1 end
+        end
+    end
+    return moved
+end
+FHK.MigrateEllesmereTextVariants = function() return MigrateTextVariants(EUI._ModuleNS and EUI._ModuleNS.EllesmereUIUnitFrames) end
+FHK.EllesmereTextVariant = TextVariant
 local separators=setmetatable({},{__mode='k'})
 local function PaintBarSeparator(frame)
     if not frame then return end
@@ -925,7 +1148,15 @@ local function PaintPowerDeath(frame,unit)
     frame._fhkPowerAlpha,frame._fhkPowerObject,frame._fhkPowerFill=alpha,power,fill
     frame._fhkPowerTextAlpha,frame._fhkPowerGone=textAlpha,gone
     frame._fhkPowerText,frame._fhkPowerZones=power._ppFS,frame._euiTextZones
-    if fill then fill:SetAlpha(alpha) end
+    if fill then
+        -- Ellesmere stores Power Bar Opacity in this alpha (review U2): fade from it, return to it.
+        if alpha==0 then
+            if frame._fhkFillAlpha==nil then local a=fill.GetAlpha and fill:GetAlpha();frame._fhkFillAlpha=type(a)=='number' and a>0 and a or 1 end
+            fill:SetAlpha(0)
+        elseif frame._fhkFillAlpha~=nil then
+            fill:SetAlpha(frame._fhkFillAlpha);frame._fhkFillAlpha=nil
+        end
+    end
     -- Restore everything faded last time, even a zone since changed to other content.
     local faded=frame._fhkPowerFaded or {}
     for fs in pairs(faded) do fs:SetAlpha(1); faded[fs]=nil end
@@ -943,7 +1174,7 @@ FHK.PaintEllesmerePowerDeath=PaintPowerDeath
 -- of the vertically centred text; its X/Y offsets still apply. A Portrait or
 -- corner position is the player's choice and stays native.
 local function EdgeBadge(s)
-    if FHKEllesmereDB and FHKEllesmereDB.statusIconBadge==false then return false end
+    if FrameSetting('statusIconBadge')==false then return false end
     local pos=s and s.combatIndicatorPosition or 'healthbar'
     return pos=='healthbar' or pos=='center'
 end
@@ -1009,7 +1240,8 @@ local function InstallText()
     -- Seed a visible player resource once, then native controls own it.
     if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local player = ns.db and ns.db.profile and ns.db.profile.player
-    if player and not FHKEllesmereDB.resourceTextSeeded then
+    -- Publishing rule (review U4): only the owner install gets this seed; never in combat.
+    if player and not FHKEllesmereDB.resourceTextSeeded and _G.ForeverHunterKeysNS ~= nil and not InCombatLockdown() then
         if not player.powerPercentText or player.powerPercentText == 'none' then
             player.powerPercentText = 'center'
             if not player.powerTextFormat or player.powerTextFormat == 'perpp' then player.powerTextFormat = 'both' end
@@ -1022,6 +1254,10 @@ local function InstallText()
     -- Native content keys and text zones retain EUI's positioning and formatting.
     ns.ContentToZone = function(content, prefix, settings)
         local healthSlot = not (prefix and prefix:match('^btb'))
+        if healthSlot and (content == 'curpp' or content == 'perpp') then
+            local variant = TextVariant(UnitKeyOf(ns, settings), prefix, content)
+            if variant then content = variant end
+        end
         if healthSlot and resourceFormats[content] then
             local def = resourceFormats[content]
             return def[1], def[2]
@@ -1040,7 +1276,10 @@ local function InstallText()
         end
         return original(content, prefix, settings)
     end
-    hooksecurefunc(ns, 'SetTextZone', function(frame, fs, content, prefix)
+    hooksecurefunc(ns, 'SetTextZone', function(frame, fs, content, prefix, settings)
+        if (content == 'curpp' or content == 'perpp') and not (prefix and prefix:match('^btb')) then
+            content = TextVariant(UnitKeyOf(ns, settings or Settings(ns, frame)), prefix, content) or content
+        end
         resourceZones[fs] = resourceFormats[content] and not (prefix and prefix:match('^btb')) or nil
         if content ~= 'perhp_perpp' and content ~= 'curhp_curpp' and not resourceFormats[content] then return end
         if prefix and prefix:match('^btb') then return end
@@ -1067,7 +1306,10 @@ local function InstallText()
             resourceZones[fs] = fmt and powerZone or nil
             if fmt and powerZone and s then
                 local suffix = s.powerShowPercent ~= false and '%%' or ''
-                if s.powerTextFormat == 'perppnum' then
+                -- Legacy key, or the stored pair over its native stand-in (SC-2).
+                local unitKey = frame._euiBaseUnit or frame._euiUnit
+                if type(unitKey) == 'string' and unitKey:match('^boss') then unitKey = 'boss' end
+                if s.powerTextFormat == 'perppnum' or TextVariant(unitKey, 'powerText', s.powerTextFormat) == 'perppnum' then
                     fmt, pieces = '%s' .. suffix .. ' | %s', {ResourcePercentPlain, ResourceNumber}
                 elseif s.powerTextFormat == 'both' then
                     fmt, pieces = '%s | %s' .. suffix, {ResourceNumber, ResourcePercentPlain}
@@ -1085,6 +1327,7 @@ local function InstallText()
             return result
         end
     end
+    MigrateTextVariants(ns)
     -- Rebuild the already spawned zones to pick up the extended formatter.
     for key, frame in pairs(ns.frames or {}) do
         if IsUnitFrame(frame) then
@@ -1108,17 +1351,22 @@ local function ExtendConfig(cfg)
         -- The existing Power Text dropdown, including mini-frame versions.
         powerMenus[values] = true
         values.curpp, values.perpp = 'Resource #', 'Resource %'
-        values.both, values.perppnum = 'Resource # | %', 'Resource % | #'
-        keys = {'perppnum'}
+        values.both = 'Resource # | %'
+        if values.perppnum == 'Resource % | #' then values.perppnum = nil end
+        keys = {}
     elseif values.both and values.levelname and values.healabsorb then
         values.perpp, values.curpp = 'Resource %', 'Resource #'
-        values.fhk_manaboth, values.fhk_manaperfirst = 'Resource # | %', 'Resource % | #'
+        values.fhk_manaboth, values.fhk_manaperfirst = nil, nil
         values.perhp_perpp = 'Health % | Resource %'
         values.curhp_curpp = 'Health # | % | Resource %'
-        keys = {'perpp', 'curpp', 'fhk_manaboth', 'fhk_manaperfirst', 'perhp_perpp', 'curhp_curpp'}
+        keys = {'perpp', 'curpp', 'perhp_perpp', 'curhp_curpp'}
     else return end
     -- The UF health-content table is distinct from resource/cast text tables.
     if cfg.order then
+        for i = #cfg.order, 1, -1 do
+            local key = cfg.order[i]
+            if key == 'fhk_manaboth' or key == 'fhk_manaperfirst' or key == 'perppnum' and not values.perppnum then table.remove(cfg.order, i) end
+        end
         for _, key in ipairs(keys) do
             local found
             for _, existing in ipairs(cfg.order) do if existing == key then found = true; break end end
@@ -1251,19 +1499,22 @@ end
 -- edge, so gold (you), green (pet) and none (someone else) read at a glance.
 local AGGRO=C.aggroYou or C.caution or {1,.82,0}
 local ON_PET=C.aggroPet or C.happy or {.30,.85,.30}
+local PLATE_UNIT_METHODS, PLATE_TEXTS = {'SetUnit', 'ClearUnit'}, {'hpText', 'hpNumber'}
 local function PaintAggro(plate)
     local hp=plate.health
     if not hp then return end
     local unit=plate.unit
     local db=FHKEllesmereDB
     local you,pet=not (db and db.aggroPlates==false),db and db.petAggroPlates==true
+    -- Ellesmere's Threat Colors border owns the plate edge while it is on (suite review SF-5).
+    if plate._threatBdOn then you,pet=false,false end
     local engaged=(you or pet) and type(unit)=='string' and
         not (issecretvalue and issecretvalue(unit)) and Yes(UnitAffectingCombat(unit)) and Yes(UnitCanAttack('player',unit))
     local colour=engaged and (you and Yes(UnitIsUnit(unit..'target','player')) and AGGRO or
         pet and Yes(UnitIsUnit(unit..'target','pet')) and ON_PET) or nil
     local on=colour~=nil
     local edge=hp._fhkAggro
-    if not on then if edge then edge:Hide() end return end
+    if not on then if edge and edge:IsShown() then edge:Hide() end return end
     if not edge then
         edge=CreateFrame('Frame',nil,hp);edge:EnableMouse(false);edge.sides={}
         for i=1,4 do edge.sides[i]=edge:CreateTexture(nil,'OVERLAY',nil,7) end
@@ -1285,7 +1536,9 @@ local function PaintAggro(plate)
         for _,t in ipairs(edge.sides) do t:SetColorTexture(colour[1],colour[2],colour[3],1) end
         edge._colour=colour
     end
-    edge:SetFrameLevel(hp:GetFrameLevel()+5);edge:Show()
+    local level=hp:GetFrameLevel()+5
+    if edge._level~=level then edge:SetFrameLevel(level);edge._level=level end
+    if not edge:IsShown() then edge:Show() end
 end
 -- Combat icons as white blocks (player: "simplify them to white blocks"). Ellesmere's
 -- own Square style is red and drawn exactly as authored, and red is the danger
@@ -1301,7 +1554,7 @@ local function Setting(key,default,min,max)
 end
 local function SyncCombatBlock(icon)
     local block=icon._fhkBlock
-    if FHKEllesmereDB and FHKEllesmereDB.combatIconStyle=='native' then
+    if FrameSetting('combatIconStyle')=='native' then
         if block then block:Hide();icon:SetAlpha(1) end
         return
     end
@@ -1367,7 +1620,48 @@ local function LootTextZone(frame,P)
         if health and not other and zone.fs then return zone.fs end
     end
 end
-local function Paint()
+-- One nameplate's refinements: dark background, fill, aggro edge, damage flash and health
+-- text. Called by Companion's shared plate pass, by plate events and by settings syncs.
+local function PaintPlate(np, plate, dark)
+    -- Dark mode: lost health is black, as on the unit frames. Written on change; a plate
+    -- given to another unit, or an Ellesmere settings refresh, paints it again.
+    local bg = plate.healthBG
+    if bg and dark then
+        if not plate._fhkDarkBG then bg:SetColorTexture(0, 0, 0, 1); plate._fhkDarkBG = true end
+    elseif bg and plate._fhkDarkBG then
+        local p = np.db and np.db.profile
+        local c, a = p and p.bgColor or {r=.12, g=.12, b=.12}, p and p.bgAlpha or 1
+        bg:SetColorTexture(c.r, c.g, c.b, a); plate._fhkDarkBG = nil
+    end
+    RefineBar(plate.health,plate.unit,false,false,'nameplates')
+    local st = plate.health and barStates[plate.health]
+    if st then st.plate = plate end
+    if not plate._fhkUnitHooked then
+        plate._fhkUnitHooked = true
+        -- A plate released to the pool, or given to another mob, drops the old unit's
+        -- aggro edge and dark line at once (review U6).
+        for _, method in ipairs(PLATE_UNIT_METHODS) do
+            if type(plate[method]) == 'function' then hooksecurefunc(plate, method, function(self)
+                local hp = self.health
+                if hp and hp._fhkAggro then hp._fhkAggro:Hide() end
+                local s = hp and barStates[hp]
+                if s and s.darkLine and not self.unit then s.darkLine:Hide() end
+                self._fhkDarkBG = nil
+            end) end
+        end
+    end
+    PaintAggro(plate)
+    if FHK.AttachEllesmereDamageTrail then FHK.AttachEllesmereDamageTrail(plate.health,plate.unit,'nameplates') end
+    for _, key in ipairs(PLATE_TEXTS) do
+        if plate[key] then FHK.PaintEllesmereHealthText(plate[key], plate.unit, 'nameplates') end
+    end
+end
+function FHK.PaintEllesmerePlateRefinements(plate)
+    local np = _G.EllesmereNameplates_NS
+    if np and plate then PaintPlate(np, plate, Dark()) end
+end
+local lastPlatePasses
+local function Paint(plates)
     InstallRaidFills()
     InstallText(); InstallOptions()
     local ns = installed
@@ -1480,32 +1774,27 @@ local function Paint()
             end
         end
     end
+    -- Nameplates: Companion's shared plate pass paints them (suite review SF-11); this
+    -- sweep covers them only when no such pass ran since its last tick.
+    if not plates then
+        local passes = FHK.EllesmerePlatePasses
+        if passes and passes ~= lastPlatePasses then lastPlatePasses = passes; return end
+    end
     local np = _G.EllesmereNameplates_NS
     local dark = Dark()
-    for _, plate in pairs(np and np.plates or {}) do
-        -- Dark mode: lost health is black, as on the unit frames. Re-set each sweep,
-        -- since Ellesmere may repaint the background on a settings refresh.
-        local bg = plate.healthBG
-        if bg and dark then bg:SetColorTexture(0, 0, 0, 1); plate._fhkDarkBG = true
-        elseif bg and plate._fhkDarkBG then
-            local p = np.db and np.db.profile
-            local c, a = p and p.bgColor or {r=.12, g=.12, b=.12}, p and p.bgAlpha or 1
-            bg:SetColorTexture(c.r, c.g, c.b, a); plate._fhkDarkBG = nil
-        end
-        RefineBar(plate.health,plate.unit,false,false,'nameplates')
-        PaintAggro(plate)
-        if FHK.AttachEllesmereDamageTrail then FHK.AttachEllesmereDamageTrail(plate.health,plate.unit,'nameplates') end
-        for _, key in ipairs({'hpText', 'hpNumber'}) do
-            if plate[key] then FHK.PaintEllesmereHealthText(plate[key], plate.unit, 'nameplates') end
-        end
-    end
+    for _, plate in pairs(np and np.plates or {}) do PaintPlate(np, plate, dark) end
 end
 -- A colour swatch changed a token: cached colour curves rebuild from the new values.
 function FHK.ResetEllesmereColourCurves()
-    for _,state in pairs(barStates) do state.curve=nil end
+    for _,state in pairs(barStates) do state.curve=nil;state.vividOn=nil end
+    -- Warning stops and text curves are built from the colour tokens too (review U5).
+    vividWarningStops=nil
+    for k in pairs(healthTextCurves) do healthTextCurves[k]=nil end
 end
 function FHK.SyncEllesmereUnitRefinements()
     if installed then
+        -- A switched or imported profile may carry keys an older version wrote (SC-2).
+        MigrateTextVariants(installed)
         for _,frame in pairs(installed.frames or {}) do
             if IsUnitFrame(frame) and frame.Power and frame.Power._applyPowerPercentText then
                 local s=Settings(installed,frame)
@@ -1513,7 +1802,7 @@ function FHK.SyncEllesmereUnitRefinements()
             end
         end
     end
-    Paint()
+    Paint(true)
     for bar,state in pairs(raidBars) do PaintRaidBar(bar,state) end
 end
 driver:RegisterEvent('PLAYER_LOGIN')
@@ -1526,6 +1815,9 @@ for _, event in ipairs({'PLAYER_TARGET_CHANGED', 'PLAYER_FOCUS_CHANGED', 'PLAYER
 end
 local BATCHED = {UNIT_THREAT_SITUATION_UPDATE=true, UNIT_THREAT_LIST_UPDATE=true, UNIT_FACTION=true, UNIT_TARGET=true}
 local queued = false
+-- Plates whose mob changed target, threat or faction repaint on the next frame, alone
+-- (suite review SF-11: event-driven where possible, instead of waiting for a sweep).
+local dirtyPlates, platesQueued = {}, false
 driver:SetScript('OnEvent', function(_, event, unit, sender)
     if event=='CHAT_MSG_MONSTER_EMOTE' then LearnFlee(unit,sender);return end
     -- Forget only the units this event changed (UNIT_TARGET is frequent in combat).
@@ -1540,7 +1832,10 @@ driver:SetScript('OnEvent', function(_, event, unit, sender)
         -- Threat, faction and target changes arrive from every mob in a fight.
         -- Nameplate copies are skipped (the target/focus token fires too) and
         -- the rest share one repaint on the next frame.
-        if type(unit)=='string' and not (issecretvalue and issecretvalue(unit)) and unit:find('^nameplate') then return end
+        if type(unit)~='string' or (issecretvalue and issecretvalue(unit)) then return end
+        if unit:find('^nameplate') then dirtyPlates[unit]=true; platesQueued=true; return end
+        -- Only units we draw (review U1): raid and party threat/target traffic arrives every frame.
+        if not (unit=='player' or unit=='pet' or unit=='target' or unit=='focus' or unit=='targettarget' or unit:find('^boss')) then return end
         queued=true
     elseif event:find('^UNIT_') then
         if installed and installed.UF_PaintPowerText then
@@ -1557,7 +1852,122 @@ end)
 local elapsed = 0
 driver:SetScript('OnUpdate', function(_, dt)
     elapsed = elapsed + dt
-    if queued then queued = false; elapsed = 0; Paint(); return end
+    if platesQueued then
+        platesQueued = false
+        local np = _G.EllesmereNameplates_NS
+        local dark = Dark()
+        for unit in pairs(dirtyPlates) do
+            dirtyPlates[unit] = nil
+            local plate = np and np.plates and np.plates[unit]
+            if plate then PaintPlate(np, plate, dark) end
+        end
+    end
+    if queued and elapsed >= .05 then queued = false; elapsed = 0; Paint(); return end
     if elapsed < (FHK.EllesmereSweepInterval and FHK.EllesmereSweepInterval() or .15) then return end
     elapsed = 0; Paint()
 end)
+-- The Target of Target row (review C7) for COLOUR AND TEXT REFINEMENTS: the toggle with the
+-- two shared colours as swatches (they also colour the nameplate edges) and a cog for the
+-- pet half. Swatches grey out with the reason while their part is off (review C9).
+local function DB() if type(FHKEllesmereDB) ~= 'table' then FHKEllesmereDB = {} end return FHKEllesmereDB end
+local function Repaint() if FHK.SyncEllesmereUnitRefinements then FHK.SyncEllesmereUnitRefinements() end end
+local function SharedSwatch(key, tip, off, why)
+    local fallback = key == 'aggroPet' and {.30, .85, .30} or {1, .82, 0}
+    return {tooltip=tip, hasAlpha=false, disabled=off, disabledTooltip=why,
+        getValue=function() local c = Token(key, fallback); return c[1], c[2], c[3], 1 end,
+        setValue=function(r, g, b)
+            if not (PublicNumber(r) and PublicNumber(g) and PublicNumber(b)) then return end
+            local db = DB()
+            if type(db.hunterColors) ~= 'table' then db.hunterColors = {} end
+            db.hunterColors[key] = {r, g, b}
+            if FHK.ApplyEllesmereHunterColours then FHK.ApplyEllesmereHunterColours() else Repaint() end
+        end}
+end
+function FHK.AddEllesmereTargetOfTargetRow(Row)
+    local OFF = 'Gold Target of Target on You'
+    local off = function() return DB().totOnYou == false end
+    local petOff = function() return off() or DB().totOnPet == false end
+    local petWhy = function() return off() and OFF or 'Green When On Your Pet' end
+    local toggle = {type='toggle', text=OFF,
+        tooltip='While an enemy target attacks you, the target of target bar turns the On You color (WoW gold, as on the nameplate edge). While it attacks your pet, the bar turns the On Pet color (pet green).',
+        getValue=function() return DB().totOnYou ~= false end,
+        setValue=function(v) DB().totOnYou = v; Repaint() end,
+        swatches={SharedSwatch('aggroYou', 'On You Color (shared with the nameplate edge)', off, OFF),
+            SharedSwatch('aggroPet', 'On Pet Color (shared with the nameplate edge)', petOff, petWhy)},
+        cog={title='Target of Target', disabled=off, disabledTooltip=OFF, rows={
+            {type='toggle', label='Green When On Your Pet', tooltip='Off: only attacks on you change the bar.',
+                get=function() return DB().totOnPet ~= false end, set=function(v) DB().totOnPet = v; Repaint() end}}}}
+    local reset = {type='button', text='Reset Target of Target Colors',
+        tooltip='Returns the On You and On Pet colors to gold and pet green. The nameplate edges share them.',
+        onClick=function()
+            local saved = DB().hunterColors
+            if type(saved) == 'table' then saved.aggroYou, saved.aggroPet = nil, nil end
+            if FHK.ApplyEllesmereHunterColours then FHK.ApplyEllesmereHunterColours() else Repaint() end
+            if EUI.RefreshPage then pcall(EUI.RefreshPage, EUI) end
+        end}
+    Row(toggle, reset)
+end
+-- Resource text pairs on our Unit Frames page (suite review SC-2): one row per Ellesmere
+-- text slot that shows Resource # or Resource %, and per power text that shows # | %.
+-- Ellesmere's profile keeps the native value; the pair is ours, so exports stay readable.
+local UNIT_ORDER = {{'player','Player'},{'target','Target'},{'focus','Focus'},{'pet','Pet'},
+    {'targettarget','Target of Target'},{'focustarget','Focus Target'},{'boss','Boss'}}
+local SLOT_NAMES = {leftText='Left Text', rightText='Right Text', centerText='Center Text', extraText='Extra Text'}
+local function ReapplyText(ns, s)
+    for _, frame in pairs(ns.frames or {}) do
+        if IsUnitFrame(frame) and Settings(ns, frame) == s then
+            if frame._applyTextTags then
+                pcall(frame._applyTextTags, s.leftTextContent, s.rightTextContent, s.centerTextContent, s.extraTextContent)
+            end
+            if frame.Power and frame.Power._applyPowerPercentText then pcall(frame.Power._applyPowerPercentText, s) end
+        end
+    end
+end
+function FHK.AddEllesmereUnitTextVariantRows(Row)
+    local ns = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIUnitFrames
+    local p = ns and ns.db and ns.db.profile
+    local blank = EUI.BlankRowCfg and EUI.BlankRowCfg() or {type='label', text=''}
+    if type(p) ~= 'table' then
+        Row({type='label', text='Resource text pairs need Ellesmere Unit Frames'}, blank)
+        return
+    end
+    MigrateTextVariants(ns)
+    local cfgs = {}
+    for _, unit in ipairs(UNIT_ORDER) do
+        local key, unitName = unit[1], unit[2]
+        local s = p[key]
+        if type(s) == 'table' then
+            for _, slot in ipairs(TEXT_SLOTS) do
+                local field = slot .. 'Content'
+                local native = s[field]
+                if native == 'curpp' or native == 'perpp' then
+                    cfgs[#cfgs + 1] = {type='dropdown', text=unitName .. ' ' .. SLOT_NAMES[slot],
+                        tooltip='Shows both resource values in this slot. Ellesmere keeps its own setting, so the profile still reads correctly without the companion.',
+                        values={native=native == 'curpp' and 'Resource #' or 'Resource %', fhk_manaboth='Resource # | %', fhk_manaperfirst='Resource % | #'},
+                        order={'native', 'fhk_manaboth', 'fhk_manaperfirst'},
+                        getValue=function() return TextVariant(key, slot, s[field]) or 'native' end,
+                        setValue=function(v)
+                            if TEXT_VARIANTS[v] then SetTextVariant(key, slot, v); s[field] = TEXT_VARIANTS[v]
+                            else SetTextVariant(key, slot, nil) end
+                            ReapplyText(ns, s)
+                        end}
+                end
+            end
+            if s.powerTextFormat == 'both' and s.powerPercentText and s.powerPercentText ~= 'none' then
+                cfgs[#cfgs + 1] = {type='dropdown', text=unitName .. ' Power Text Order',
+                    tooltip='Value first or percent first. Ellesmere keeps Value | %, so the profile still reads correctly without the companion.',
+                    values={native='Resource # | %', perppnum='Resource % | #'}, order={'native', 'perppnum'},
+                    getValue=function() return TextVariant(key, 'powerText', s.powerTextFormat) or 'native' end,
+                    setValue=function(v)
+                        SetTextVariant(key, 'powerText', POWER_VARIANTS[v] and v or nil)
+                        ReapplyText(ns, s)
+                    end}
+            end
+        end
+    end
+    if #cfgs == 0 then
+        Row({type='label', text='Set a Unit Frames text slot to Resource # or Resource % to pair its values here'}, blank)
+        return
+    end
+    for i = 1, #cfgs, 2 do Row(cfgs[i], cfgs[i + 1] or blank) end
+end

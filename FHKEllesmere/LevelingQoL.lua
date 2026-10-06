@@ -196,7 +196,9 @@ local function Known(id) return Read(C_SpellBook and C_SpellBook.IsSpellKnown,id
 function L.CheckGather()
     local s=NS.EllesmereLevelingSettings()
     local show
-    if s.gatherTrack and not InCombat() then
+    -- Not while the player cannot act on it (SCENARIO_REVIEW S50).
+    local away=NS.EllesmereAway and NS.EllesmereAway('act')
+    if s.gatherTrack and not InCombat() and not away then
         local M=C_Minimap
         local n=M and Read(M.GetNumTrackingTypes)
         local any,readable=false,Num(n)
@@ -374,7 +376,11 @@ function NS.SyncEllesmereLeveling()
     driver:RegisterEvent('ADDON_LOADED');driver:RegisterEvent('PLAYER_ENTERING_WORLD')
     if s.lootLeft then for _,e in ipairs({'LOOT_OPENED','LOOT_READY','LOOT_SLOT_CLEARED','LOOT_CLOSED'}) do driver:RegisterEvent(e) end end
     if s.rangeFade then driver:RegisterEvent('PLAYER_TARGET_CHANGED') end
-    if s.gatherTrack then for _,e in ipairs({'MINIMAP_UPDATE_TRACKING','PLAYER_REGEN_ENABLED','PLAYER_REGEN_DISABLED','SPELLS_CHANGED'}) do driver:RegisterEvent(e) end end
+    -- Death, taxi and mount changes re-check it too (away rule, SCENARIO_REVIEW S50).
+    if s.gatherTrack then for _,e in ipairs({'MINIMAP_UPDATE_TRACKING','PLAYER_REGEN_ENABLED','PLAYER_REGEN_DISABLED','SPELLS_CHANGED',
+        'PLAYER_DEAD','PLAYER_ALIVE','PLAYER_UNGHOST','PLAYER_CONTROL_LOST','PLAYER_CONTROL_GAINED','PLAYER_MOUNT_DISPLAY_CHANGED'}) do
+        if not (C_EventUtils and C_EventUtils.IsEventValid) or C_EventUtils.IsEventValid(e) then driver:RegisterEvent(e) end
+    end end
     if s.closeBags then
         L.WatchBags()
         for e in pairs(OPEN_EVENTS) do driver:RegisterEvent(e) end
@@ -417,7 +423,7 @@ function NS.AddEllesmereLevelingOptions(Row)
     Row({type='toggle',text='Show When Mana Missing',tooltip='With Unit Frames > Show When Health Missing on, the player frame also shows while your mana is below full, for drinking between pulls. Mana only.',
         getValue=function() return s.manaVisible end,setValue=function(v) Set('manaVisible',v) end},
         {type='label',text='Uses Ellesmere\'s own health-missing reveal'})
-    Row({type='toggle',text='Gathering Tracking Reminder',tooltip='Out of combat with no tracking on: names your learned Find Herbs or Find Minerals.',
+    Row({type='toggle',text='Gathering Tracking Reminder',tooltip='Out of combat with no tracking on: names your learned Find Herbs or Find Minerals. Quiet while any tracking is on, including Track Beasts (one tracking slot), and while dead, mounted or on a taxi.',
         getValue=function() return s.gatherTrack end,setValue=function(v) Set('gatherTrack',v) end},
         {type='label',text='Tracking spells share one slot: Track Beasts wins'})
 end

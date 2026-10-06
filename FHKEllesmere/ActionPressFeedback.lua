@@ -41,12 +41,20 @@ function NS.EllesmerePressSettings()
         s[key]=Number(v) and math.max(limits[1],math.min(limits[2],v)) or DEFAULTS[key]
     end
     s.count=math.floor(s.count)
+    local c=s.flashColour
+    if c~=nil and not (type(c)=='table' and Number(c.r) and Number(c.g) and Number(c.b)) then s.flashColour=nil end
     return s
 end
 local function Bars() return EUI._ModuleNS and EUI._ModuleNS.EllesmereUIActionBars end
 local function Accent()
     if EUI.GetAccentColor then return EUI.GetAccentColor() end
     return .86,.65,.50
+end
+-- The press flash follows the live accent unless the player picked its own colour.
+local function FlashColour(s)
+    local c=s.flashColour
+    if c then return c.r,c.g,c.b end
+    return Accent()
 end
 local function Border(frame,r,g,b,a)
     if EUI.MakeBorder then return EUI.MakeBorder(frame,r,g,b,a) end
@@ -57,14 +65,14 @@ local function Flash(button)
     if not f then
         f=CreateFrame('Frame',nil,button)
         f:SetAllPoints(button);f:SetFrameLevel(button:GetFrameLevel()+25);f:EnableMouse(false)
-        f.border=Border(f,Accent())
+        f.border=Border(f,FlashColour(s))
         f.fill=f:CreateTexture(nil,'OVERLAY');f.fill:SetAllPoints()
         local group=f:CreateAnimationGroup();local a=group:CreateAnimation('Alpha')
         a:SetToAlpha(0);a:SetSmoothing('OUT');group:SetToFinalAlpha(true)
         group:SetScript('OnFinished',function() f:Hide() end)
         f.group,f.anim=group,a;flashes[button]=f
     end
-    local r,g,b=Accent()
+    local r,g,b=FlashColour(s)
     if f.border then f.border:SetColor(r,g,b,1) end
     f.fill:SetColorTexture(r,g,b,.07)
     f.group:Stop();f:SetAlpha(s.flashOpacity);f:Show()
@@ -221,7 +229,9 @@ local function Build()
                 local s=NS.EllesmerePressSettings();local _,_,label=Geometry(s)
                 if Number(h) then s.size=s.direction=='vertical' and (h-(s.count-1)*s.gap)/s.count-label or h-label;Render() end
             end,
-        })},'EllesmereUIActionBars')
+        -- Our own folder (suite review SC-3): a suite folder stamp sent the anchor along with
+        -- that module's export and dropped it on importing the module.
+        })},'FHKEllesmere')
     end
 end
 local function Style(cell,data,s)
@@ -292,6 +302,8 @@ local function Press(button,command,mouseButton,click)
     if mouse then key=s.mouse and (mouseButton=='RightButton' and 'RClick' or 'Click') or '' end
     local data={texture=Icon(button),key=key,command=command,count=1,observed=held or mouse}
     if s.mode=='casts' then
+        -- Include Mouse Clicks off keeps clicked casts out of the list too (review X9).
+        if mouse and not s.mouse then return end
         data.spell=Spell(button);data.time=GetTime()
         inputs[#inputs+1]=data;if #inputs>12 then table.remove(inputs,1) end
         -- An instant cast can succeed inside the native handler, just before
@@ -422,8 +434,8 @@ function NS.AddEllesmerePressOptions(Row)
         if (key=='flash' or key=='history' or key=='mode') and EUI.RefreshPage then EUI:RefreshPage() end
     end
     -- Dependency states (audit F10): controls dim with the reason until their feature is on.
-    local flashOff={fn=function() return not s.flash end,why='Turn on Flash Every Action Press first'}
-    local historyOff={fn=function() return not s.history end,why='Turn on Recent Action History first'}
+    local flashOff={fn=function() return not s.flash end,why='Flash Every Action Press'}
+    local historyOff={fn=function() return not s.history end,why='Recent Action History'}
     local function Needs(cfg,need)
         if need then cfg.disabled,cfg.disabledTooltip=need.fn,need.why end
         return cfg
@@ -445,6 +457,9 @@ function NS.AddEllesmerePressOptions(Row)
     local function CogDrop(label,key,values,order) return {type='dropdown',label=label,values=values,order=order,
         get=function() return s[key] end,set=function(v) Set(key,v) end} end
     local flash=Toggle('Flash Every Action Press','flash','A short accent border responds to each key-down, even when the ability cannot fire.')
+    flash.swatches={{tooltip='Press Flash Color (default: the Ellesmere accent)',hasAlpha=false,disabled=flashOff.fn,disabledTooltip=flashOff.why,
+        getValue=function() local r,g,b=FlashColour(s);return r,g,b,1 end,
+        setValue=function(r,g,b) if Number(r) and Number(g) and Number(b) then s.flashColour={r=r,g=g,b=b} end end}}
     flash.cog={title='Press Flash',disabled=flashOff.fn,disabledTooltip=flashOff.why,rows={
         CogPercent('Opacity %','flashOpacity',10),CogSlider('Duration','flashDuration',.08,.5,.02)}}
     local history=Toggle('Recent Action History','history','A separate movable unit in native Unlock Mode. Icons slide in and fade away.')
@@ -467,16 +482,26 @@ function NS.AddEllesmerePressOptions(Row)
     records.tooltip='Key Presses: every attempted press. Casts From Bar Keys: successful casts that started from an action-bar key; casts from elsewhere are not listed.'
     local fold=Toggle('Fold Repeated Presses','fold','Groups consecutive presses of the same binding with an xN count.')
     fold.disabled=function() return not s.history or s.mode=='casts' end
-    fold.disabledTooltip=function() return not s.history and historyOff.why or 'Key Presses mode only' end
+    fold.disabledTooltip=function() return not s.history and historyOff.why or 'This option applies when History Records is Key Presses' end
     Row(records,fold)
     local keyLabels=Toggle('Show History Key Labels','keys','Bright label: the key was seen held. Dim label: the action\'s assigned binding, shown when the actual key could not be seen.',historyOff)
-    keyLabels.cog={title='History Key Labels',disabled=function() return not (s.history and s.keys) end,disabledTooltip='Show History Key Labels',rows={
+    keyLabels.cog={title='History Key Labels',disabled=function() return not (s.history and s.keys) end,
+        disabledTooltip=function() return not s.history and historyOff.why or 'Show History Key Labels' end,rows={
         CogSlider('Font Size','keySize',8,18,1),CogDrop('Position','keyPosition',{bottom='Below Icon',corner='Top Right'},{'bottom','corner'})}}
     Row(keyLabels,Toggle('Include Mouse Clicks','mouse','Includes mouse clicks in press history; labels them Click or RClick.',historyOff))
     Row(Toggle('Naga Button Labels','nagaLabels','Shows N1-N6 for F9-F12 / Insert / Delete, N9 / N11 / N12 for the Synapse chords, instead of the keys they send.',historyOff),
-        Needs({type='button',text='Move / Resize History',onClick=function()
+        Needs({type='button',text='Move / Resize History',tooltip='Opens Unlock Mode, where Recent Actions moves and resizes like Ellesmere elements.',onClick=function()
             if s.history and EUI.ToggleUnlockMode then EUI:ToggleUnlockMode() end
         end},historyOff))
+    if NS.EllesmereSectionReset then
+        Row(NS.EllesmereSectionReset('Key Press And Action History',function()
+            local position=s.position
+            for k in pairs(s) do s[k]=nil end
+            s.position=position
+            Clear();NS.EllesmerePressSettings();NS.SyncEllesmerePressFeedback()
+        end, 'Restores the press flash and action history settings to their defaults, which are off. The history keeps its position.'),
+            {type='label',text='Both start off; nothing shows until you turn one on'})
+    end
 end
 if EUI.RegAccent then EUI.RegAccent({type='callback',fn=function() if activeHistory then Render() end end}) end
 local boot=CreateFrame('Frame')

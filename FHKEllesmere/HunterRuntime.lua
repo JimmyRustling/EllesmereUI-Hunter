@@ -42,9 +42,16 @@ local function CreateBar(kind)
     bars[kind] = bar
     return bar
 end
-local elapsed = 0
+local elapsed, idleSince, meleeOn = 0, nil, false
 local KINDS = {'ranged','melee'}
-driver:SetScript('OnUpdate', function(_, dt)
+-- The ticker runs only while a clock, cue or attack is live, then sleeps (review: it ran at 20 Hz
+-- forever on a standalone install). Every event below wakes it.
+local function Live(now)
+    return next(clocks) ~= nil or autoRepeat or meleeOn or (castEnd and castEnd > now) or (retryEnd and retryEnd > now)
+end
+local Tick
+local function Wake() idleSince = nil; if driver:GetScript('OnUpdate') ~= Tick then driver:SetScript('OnUpdate', Tick) end end
+Tick = function(_, dt)
     if not NS.StyleEllesmereSwingBar or not NS.EllesmereSwingAnchor then return end
     elapsed = elapsed + dt; if elapsed < .05 then return end; elapsed=0
     local now = GetTime()
@@ -63,19 +70,33 @@ driver:SetScript('OnUpdate', function(_, dt)
         end
     end
     if NS.UpdateEllesmereAttackCues then
-        local auto = autoRepeat or (IsCurrentSpell and IsCurrentSpell(75))
-        local melee = IsCurrentSpell and IsCurrentSpell(6603)
+        -- C_Spell first; auto attack also follows PLAYER_ENTER/LEAVE_COMBAT (API audit 2026-10-06).
+        local current = C_Spell and C_Spell.IsCurrentSpell or IsCurrentSpell
+        local function Current(id) if type(current) ~= 'function' then return nil end local ok, v = pcall(current, id); return ok and v == true end
+        local auto = autoRepeat or Current(75)
+        local melee = meleeOn or Current(6603)
         NS.UpdateEllesmereAttackCues(auto == true, melee == true, now)
     end
-end)
+    -- One second idle (fades and the last cue update finish), then sleep.
+    if Live(now) then idleSince = nil
+    elseif not idleSince then idleSince = now
+    elseif now - idleSince > 1 then idleSince = nil; driver:SetScript('OnUpdate', nil) end
+end
+Wake()
 driver:RegisterEvent('PLAYER_SWING'); driver:RegisterEvent('PLAYER_ENTERING_WORLD')
+-- Auto attack on and off (melee has no autorepeat events).
+driver:RegisterEvent('PLAYER_ENTER_COMBAT'); driver:RegisterEvent('PLAYER_LEAVE_COMBAT')
 driver:RegisterEvent('START_AUTOREPEAT_SPELL'); driver:RegisterEvent('STOP_AUTOREPEAT_SPELL')
 -- Player casts only: the client drops every other unit's casts before Lua runs.
 for _,event in ipairs({'UNIT_SPELLCAST_START','UNIT_SPELLCAST_SUCCEEDED','UNIT_SPELLCAST_FAILED_QUIET','UNIT_SPELLCAST_INTERRUPTED'}) do
     if driver.RegisterUnitEvent then driver:RegisterUnitEvent(event,'player') else driver:RegisterEvent(event) end
 end
 driver:SetScript('OnEvent', function(_, event, duration, swingType, spellID)
+    Wake()
+    if event == 'PLAYER_ENTER_COMBAT' then meleeOn = true; return end
+    if event == 'PLAYER_LEAVE_COMBAT' then meleeOn = false; return end
     if event == 'PLAYER_ENTERING_WORLD' then
+        meleeOn = false
         clocks, ends = {}, {}
         autoRepeat,castEnd,retryEnd=false,nil,nil
         if NS.WeaveTiming then NS.WeaveTiming.ResetClock() end
@@ -117,7 +138,10 @@ driver:SetScript('OnEvent', function(_, event, duration, swingType, spellID)
     else
         if NS.WeaveTiming then NS.WeaveTiming.MeleeSwing(now,duration) end
         local finish = math.max(ends.main or 0,ends.off or 0)
-        if not clocks.melee or finish > clocks.melee.finish then SetClock('melee',now,finish-now) end
+        -- A later hand extends the clock from its own start (review C10): no jump back to 0 %.
+        local c = clocks.melee
+        if not c or c.finish <= now then SetClock('melee',now,finish-now)
+        elseif finish > c.finish then c.duration, c.finish = finish-c.start, finish end
         local cfg = FHKEllesmereDB and FHKEllesmereDB.swingCursor or {}
         local reset=NS.WeaveTiming and NS.WeaveTiming.RangedResetsOnMelee() or not NS.WeaveTiming and cfg.resetOnMelee~=false
         if reset then

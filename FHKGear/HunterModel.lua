@@ -49,13 +49,20 @@ local function SpellName(id)
     local info = S.Read(C_Spell and C_Spell.GetSpellInfo, id)
     return S.Table(info) and S.Text(info.name) and info.name or nil
 end
-local function Known(id)
-    for _, fn in ipairs({C_SpellBook and C_SpellBook.IsSpellKnown, _G.IsPlayerSpell, _G.IsSpellKnown}) do
-        local v = S.Read(fn, id)
-        if S.Plain(v) and type(v) == 'boolean' then return v end
-    end
-    return nil
+local function Ask(fn, id)
+    if type(fn) ~= 'function' then return nil end
+    local v = S.Read(fn, id)
+    if S.Plain(v) and type(v) == 'boolean' then return v end
 end
+-- C_SpellBook.IsSpellKnown first; the globals are deprecation shims loaded only with a CVar (review D8).
+-- Asked in turn: the old ipairs list stopped at a missing C_SpellBook and skipped the fallbacks.
+local function Known(id)
+    local v = Ask(C_SpellBook and C_SpellBook.IsSpellKnown, id)
+    if v == nil then v = Ask(rawget(_G, 'IsPlayerSpell'), id) end
+    if v == nil then v = Ask(rawget(_G, 'IsSpellKnown'), id) end
+    return v
+end
+M.Known = Known
 -- rank, how ('set' / 'talent window' / 'spell known' / 'not learned' / 'unknown')
 function M.TalentRank(key)
     local t = D.talents[key]
@@ -130,7 +137,8 @@ end
 local function ReadAmmo()
     local out = {}
     local function Consider(info)
-        if info and not info.missing and info.classID == 6 and S.Number(info.subclassID) then
+        -- Ammo above your level does not count yet (review GU9).
+        if info and not info.missing and info.classID == 6 and S.Number(info.subclassID) and info.usable ~= false and (info.reqLevel or 0) <= ns.Level() then
             out[info.subclassID] = math.max(out[info.subclassID] or 0, Number(info.stats.DPS, 0))
         end
     end
@@ -203,6 +211,10 @@ function M.State()
     -- Detect: a Hunter levels with a pet, so it counts even while dead, dismissed or despawned on a
     -- flight path (no weight churn or gear swaps). Only a Lone Wolf Hunter follows whether a pet is out.
     local petUp = true
+    -- Before Tame Beast is learned (level 10) there is no pet to count (review GU10).
+    -- C_SpellBook.IsSpellKnown first; the IsPlayerSpell / IsSpellKnown globals are deprecation shims (review D8).
+    local tame = Known(1515)
+    if tame == false and S.Read(UnitExists, 'pet') ~= true then petUp = false end
     if M.TalentRank('loneWolf') > 0 then petUp = S.Read(UnitExists, 'pet') == true and S.Read(UnitIsDead, 'pet') ~= true end
     if c.hunterPet == 'pet' then petUp = true elseif c.hunterPet == 'none' then petUp = false end
     st.pet = petUp

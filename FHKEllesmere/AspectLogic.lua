@@ -39,12 +39,13 @@ function L.Decide(i)
     end
     if travel and i.hostile and near[range] then return CombatAspect(i),'action' end
     if not active then
-        if i.moving and i.travel and not i.indoors and not i.hostile and k.cheetah then return 'cheetah','info' end
+        if i.moving and i.travel and not i.indoors and not i.swimming and not i.hostile and k.cheetah then return 'cheetah','info' end
         local want=CombatAspect(i)
         if want then return want,i.hostile and 'action' or 'info' end
         return nil
     end
-    if i.moving and i.travel and not i.indoors and not i.hostile and k.cheetah and not travel then return 'cheetah','info' end
+    -- Swimming: Cheetah does not raise swim speed (SCENARIO_REVIEW S49).
+    if i.moving and i.travel and not i.indoors and not i.swimming and not i.hostile and k.cheetah and not travel then return 'cheetah','info' end
 end
 function L.StableRange(state,value,now)
     if value~=state.pending then state.pending,state.since=value,now end

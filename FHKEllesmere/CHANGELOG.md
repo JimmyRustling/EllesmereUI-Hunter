@@ -3,7 +3,353 @@
 Every change gets an entry, using the template and evidence levels in [DEVELOPMENT.md](DEVELOPMENT.md#proof-of-updates).
 E1 = static checks, E2 = mocked integration, E3 = seen working in game. Only E3 means "works".
 
-## [Unreleased]: 1.9.3 (pet food row, Hunter cues, priority 2/3, leveling helpers; new TOC files: full restart)
+## 1.9.5 test build (class kits for every class, Vendor Restock, scenario and adversarial reviews; FHK Gear 0.5.3; new TOC files: full restart)
+
+### Suite review: the companion and Gear inside EllesmereUI main 9.3.9 (Claude + three read-only reviewers; fixes by agents A, F, G and the lead; 2026-10-06)
+- **Reports:** [SUITE_REVIEW_CORE_2026-10-06.md](SUITE_REVIEW_CORE_2026-10-06.md), [SUITE_REVIEW_FRAMES_2026-10-06.md](SUITE_REVIEW_FRAMES_2026-10-06.md), [SUITE_REVIEW_QOL_2026-10-06.md](SUITE_REVIEW_QOL_2026-10-06.md).
+  - Ellesmere main is staged at `.dev/staged-main-939`.
+  - 49 findings, 3 must. E1 review; fixes E2.
+- **APIs:** no core API we use changed on main. Every hooked internal still exists. Nothing taints.
+- **Must, fixed:**
+  - **SQ-1 (F):** an Ellesmere junk sale's bag update no longer ends our restock purchase early. A purchase settles only when stock rose; a dropped buy is undone and retried once.
+  - **SC-1 (lead):** restore snapshots (bag/menu visibility, theme, class HUD, combat layout) belong to one profile store. Ellesmere's Reset ALL or a same-name import can never restore an old snapshot into a fresh profile.
+  - **SF-1 (G):** our bar colouring never writes a fill Ellesmere owns. That covers its gradients on Unit Frames, Resource Bars and the swing row, Dynamic Health Color, thresholds and bands. Our hook re-attaches when Ellesmere's Fill Opacity clears it (SF-2).
+- **Should, fixed:**
+  - **SQ-2, SQ-3 (F):** a junk sale no longer uses up our retry. Restock never buys an item Ellesmere Bags marks as junk (`EUI_CategoryManager:IsJunk`).
+  - **SQ-6 (F, probe):** the default warning lanes clear Ellesmere's buff-reminder icons.
+  - **SQ-7 (A):** "Leave Raid Buffs To Ellesmere" (on). In instances, Ellesmere's own raid-buff reminder speaks for Fortitude, Arcane Intellect, Mark of the Wild and Battle Shout.
+  - **SQ-4 (lead):** a one-choice quest is left to Ellesmere's Quest Tracker auto turn-in when that is on.
+  - **SQ-5 (lead):** Auto Train never makes a second pick of a lone trainer option.
+  - **SQ-14 (lead):** Class Supplies reads the vendor list once per visit.
+  - **SC-3 (lead and G):** our movers are filed under FHKEllesmere, never inside a suite module's layout export.
+  - **SC-4 (lead):** Class HUD shortcuts grey out when their module is not loaded.
+  - **SC-5 (lead):** Gear search results land on their real section; Hunter Model labels are indexed for hunters only.
+  - **SC-6 (lead):** two keys added to the Resets; a validator now checks that every profile key has a Reset.
+  - **SC-7 (lead):** a profile switched in combat resyncs after combat.
+- **Frames (G):**
+  - **SF-3, SF-6:** our health ramp and neutral colour step aside for Ellesmere's own options.
+  - **SF-5:** the gold aggro edge and range name colour step aside for Ellesmere's threat border and name colour. Enemy health % text is written only on change and keeps Ellesmere's colour outside dark mode.
+  - **SF-9:** the range text keeps its X/Y offsets.
+  - **SF-11, cost:**
+    - one plate pass instead of two;
+    - range readings reused for 0.3 s;
+    - each sweep visits the target plus 8 plates in turn, and target, threat and faction events repaint their plate at once;
+    - writes happen on change only.
+    - Mocked 25-plate pull: 15 to 8 Unit API calls per plate, and 9 plates per sweep instead of 25.
+  - **SC-2:** our resource text pairs no longer live in Ellesmere's Unit Frames profile (a blank slot for anyone without the companion). Its profile keeps native keys; the pairs live in `ufTextVariants`, migrated automatically, and are set under Unit Frames > RESOURCE TEXT PAIRS.
+- **Defaults changed on published installs only** (CLAUDE.md "Ship features, not personal setup"; the owner's install is unchanged and saved choices are kept):
+  - Nameplate Opacity Priority: off.
+  - Instant Health: off, so Ellesmere's Smooth Bars decides.
+  - The combat icon keeps Ellesmere's style (no white block).
+  - No edge badges.
+  - The pet happiness square is off, so Ellesmere's face shows.
+- **All installs:** no neutral-to-red repaint on nameplates.
+- **Probes:**
+  - SF-12: does Forever fire its own Overpower or Mongoose glow?
+  - SF-13, SF-14: the pet-target secure button anchor, and child frames created on secure frames in combat.
+  - ModernChrome micro-button re-parenting.
+- **Tests (E2):**
+  - Validate 2,964 (main 2,962).
+  - All element suites 9,976, including the new SuiteFramesTests (64).
+  - Standalone on all nine classes, live and on Ellesmere main.
+  - FHK Gear 710.
+  - `Apply.ps1 -Mode Check`: 0 changes.
+
+### Test harness: a failing suite now fails the run (Claude, 2026-10-06)
+- **Found during the suite review:** the Lua runner (fengari-node-cli) exits 0 even after a Lua error.
+  - **RunIntegration** only required the PASS lines of its first six element suites, so a failure in any later suite would pass: class buffs, weapon enchants, class supplies, class cues, new spells, restock, customisability.
+  - **RunStandalone** trusted the exit status alone.
+- **Fix:**
+  - HunterElementTests prints a final "PASS: all element suites" line, which RunIntegration requires.
+  - Each standalone run must print its own PASS line.
+  - Any Lua stack trace fails both runners.
+  - RunThemeChecks and the FHK Gear runner already required a final PASS line.
+- **Verified:** a planted failure now exits 1, and the clean tree exits 0. Earlier results in this changelog came from runs whose output was checked for errors by hand, so they stand.
+
+### Vendor Restock categories and packaging (Claude + build agent R; 2026-10-06)
+- **Restock.lua** (agent R) adds four categories to the Vendor Restock engine, each off by default:
+  - **Food** (all classes) and **Drink** (mana users), matched by the item's Food or Drink spell, with tiers 1-55.
+    - Bridge before a better tier unlocks.
+    - Use Up Old Stock.
+    - Conjured food and water count.
+    - Mages are paused once they conjure, unless Buy Anyway is on.
+  - **Class Reagents**, up to the same Keep and Warn Below numbers as Class Supplies. Thieves' Tools is bought once.
+  - **Pet Food**, moved from PetFood.lua with its settings migrated:
+    - the player's food is reserved, so pets never eat it;
+    - a diet cache per pet family, so it works with the pet dismissed.
+- The budget rows (Keep At Least, Max Spend Per Visit, Leave Free Bag Slots) are shared by every category. Warnings > VENDOR RESTOCK now shows for every class, and every class page has a Vendor Restock group.
+- **Versions:** companion 1.9.5, FHK Gear 0.5.3.
+- **Package:** `dist/ForeverCompanion-1.9.5_FHKGear-0.5.3_test.zip` (101 files).
+  - Clean-room test: only EllesmereUI plus the unzipped folders; standalone on all nine classes and Gear 703 pass.
+  - Staged Ellesmere 9.3.8 passes.
+  - `Apply.ps1 -Mode Check`: 0 changes.
+- **Tests (E2):**
+  - restock categories 160, restock and ammo 120, pet food 98, class supplies 215;
+  - every suite in `npm test` passes.
+- **E3 owed:** CLASS_KITS_PROBES.md. Not pushed.
+- **Ellesmere main (9.3.9, commit 14245494, 2026-10-06, untagged):** staged in `.dev/staged-main-939` with `git archive origin/main`.
+  - Validate, integration (every suite), standalone on all nine classes and the theme checks all pass (E2).
+  - The 43 upstream commits since 9.3.8 are mostly additive:
+    - core: Name Format helpers, search synonyms, a bags profile hook;
+    - Raid Frames and Quickdraw files split up;
+    - Bags Junk Marker, Nameplates debuff colouring, locales;
+    - Unit Frames combo-point arc internals, which the companion never calls.
+  - None of them change the plugin, options or row-tool APIs the companion uses.
+
+### Feature, customisability and Forever API review, plus the first builds from it (Claude, 2026-10-06)
+- **Why:** player: "did we also review gaps in feature comprehension, function, customisability, option toggles and settings ... every need/use case ... with a special focus on wow forever hunters ... everything uses the wow forever api". The player also asked for:
+  - a pet summon bar;
+  - a Hunter tab;
+  - per-bracket range options;
+  - warning and cue text styling and placement;
+  - auto train;
+  - a talent planner;
+  - class kits for other classes.
+- **Reviews:** five parallel read-only agents (use cases, customisability, API audit, summons, Gear), then three class-kit agents. Records:
+  - [FEATURE_REVIEW_2026-10-06.md](FEATURE_REVIEW_2026-10-06.md): every gap with its status;
+  - [CLASS_KITS_2026-10-06.md](CLASS_KITS_2026-10-06.md): per-class plan, shared engines and probes.
+- **Forever API bugs fixed:**
+  - Auto-Buy Pet Food never bought anything: the merchant data now comes from `C_MerchantFrame`.
+  - The Unspent Talent warning could never fire (boolean API).
+  - The melee attack cue never lit (`C_Spell.IsCurrentSpell`).
+  - Talent ranks now come from Forever's Traits tree instead of always reading rank 1.
+  - Skill-line count, macro limits and the Reagent enum.
+- **New, all off by default:**
+  - **Hunter hub:** a Hunter page with the features' own rows and links to their sections, plus the Recommended set.
+  - **Range brackets:** per-bracket show, text, label, pulse and sound, with presets.
+  - **Warning lanes:** Unlock Mode movers, horizontal offset, and Warning Text Style (size and outline).
+  - **Pets And Summons bar:** hunter pet controls and Summon Hawk counter; warlock demons.
+  - **Auto Train:** any class.
+  - **Talent Planner:** `/fhktalentplan`, Forever's own tree; picks stamped by level; learning is opt-in.
+- **Fixes:**
+  - The Growl reminder now waits for a dungeon or a tank.
+  - Wording fixes: Range Indicator Shape / Texture, Restart Bow After Melee, Show Melee Ready Ring, the pet frame hint, and no Reset on the frame range bar.
+- **New TOC files:** `SummonBar.lua`, `AutoTrain.lua`, `TalentPlanner.lua`. A **full client restart** is needed, not `/reload`.
+- **Tests:** E2 only.
+  - Integration 2935, plus 23 summon, 13 auto train and 17 talent planner checks.
+  - Pet food 87, hunter cues 69.
+  - Standalone: 516 option rows on both cores.
+  - Ellesmere 9.3.8 staged suites pass.
+  - Gear 505.
+- **E3 owed:** the probes in both docs, especially talent learning, weapon enchants, error types and aura secrecy. Not pushed.
+
+### Options follow the logged-in class (Claude, 2026-10-06)
+- **Why:** player: "the class hub detects what class the players logged into? to hide irrelevant options from their class?"
+- **Class page:** the hub page is named after the character's class (Hunter, Mage, Warlock...). Each class lists its own groups, then the shared Training And Talents and Alerts groups. The hunter page keeps the Recommended set.
+- **Hidden for other classes:**
+  - Hunter only: Aspects, Pet Food, Hunter Cues, Hunter Range And Corpses, Auto Attack Indicators, Hunter Timing Compatibility, and the pet happiness rows.
+  - Hunter and warlock only: Pet Auras And Target, Pets And Summons, Pet Combat Icon, and the cues section (named Pet Cues for warlocks). Player: "warlocks have pets so some options are applicable".
+  - Other classes see Warnings and Cue Colors instead of Hunter Warnings and Hunter Colors.
+  - If the class can't be read, every section stays.
+- **In progress (agent F):** warlock pet behaviour behind those rows: Pet Auras / Target, Missing / Dead Pet with Demonic Sacrifice awareness, Pet On Passive, Pet Idle; hunter-only rows inside Warnings hidden for other classes.
+- **Tests (E2):** standalone runs as Mage, Warlock and Rogue check the class page, that warlocks keep the pet sections, and that no hunter or pet section leaks to other classes. Rows: Hunter 516, Mage 294, Warlock 339, Rogue 294.
+
+### Adversarial review, round 2: the class kits (Claude + three read-only reviewers; fixes by agents A, B, D, E, F and the lead; 2026-10-06)
+- **Reports:** [ADVERSARIAL_REVIEW_2_CLASS_MODULES.md](ADVERSARIAL_REVIEW_2_CLASS_MODULES.md), [ADVERSARIAL_REVIEW_2_WARNINGS_TRAINING.md](ADVERSARIAL_REVIEW_2_WARNINGS_TRAINING.md), [ADVERSARIAL_REVIEW_2_OPTIONS_GEAR.md](ADVERSARIAL_REVIEW_2_OPTIONS_GEAR.md).
+  - 53 findings: 1 must, 25 should, the rest nice or probe.
+  - No Lua errors, taint or secret-value comparisons were found.
+- **Must (R1-1, B):** weapon enchant cues re-check on mount, taxi, death and vehicle changes. "NO POISON" no longer sticks while mounted or dead.
+- **Performance:**
+  - **R1-2:** Slice and Dice keeps one timer.
+  - **R1-7:** the behind indicator caches its stun check.
+  - **R1-8:** reactive glows keep a spell-to-button map and allocate nothing per update.
+  - **R2-1:** the ammo total is rescanned only on bag changes.
+  - **R2-11:** pet and aura events are registered for player and pet only.
+  - **R2-12:** the Talent Planner registers nothing while unused and reads nothing without a point.
+- **Behaviour:**
+  - **R1-4 (A):** a seal cast counts while auras are unreadable, so NO SEAL does not stick.
+  - **R1-5 (A):** stale combat flag after re-enabling.
+  - **R1-6 (B):** hidden weapon pods take no clicks.
+  - **R1-9 (D):** the Overpower hint only while you auto-attack.
+  - **R1-3, R1-16, R1-17 (D):** the stance and form error by class; the tick spark falls back to its own bar; the opener poll stops on unreadable range.
+  - **R2-2 (F):** a critical row never sticks in the wrong lane.
+  - **R2-5 (F):** Demonic Sacrifice by spell ID (18789-18792).
+  - **R2-8, R2-9 (F):** ammo and pet cues re-check away changes; a profile switch re-applies the error line and filter.
+  - **R2-13 (E):** no Auto Train hint at a weapon master.
+- **Lead, Auto Train:**
+  - **R2-3:** the class filter applies only at a weapon master, so Dual Wield, Mail and Pick Lock still train.
+  - **R2-4:** never learns a new profession by itself.
+  - **R2-14:** client names.
+  - **R2-16:** NaN gold floor.
+  - **R2-20:** poison tiers ordered as upgrades.
+- **Lead, Talent Planner:**
+  - **R2-6:** commits through C_ClassTalents, checks the result and rolls back on failure; never commits picks the player staged.
+  - **R2-7:** never buys the same talent twice when activeRank lags.
+  - **R2-19:** the paused message resets on plan edits.
+- **Lead, options:**
+  - **R3-1:** Turn On Recommended Hunter Set remembers each setting, and Undo restores exactly those. It no longer forces off shared features that were already on.
+  - **R3-2:** Cue Colors shows the Auto Shot swatches to hunters only, and its Reset clears only its own colors.
+  - **Nice:** `cdmLabels` added to the Cooldown Manager reset list.
+- **Lead, FHK Gear:**
+  - **R3-3:** automation and its confirmations stay with the character; an imported profile never turns on another player's Auto-Roll or Need.
+  - **R3-4:** on a loot roll, a Bind on Pickup item is not "yours" yet, so the rarity cap holds.
+  - **R3-5:** non-gear you cannot use is always your roll.
+- **Rejected, R2-10:** a module sound of None keeps the lane's default sound by design. Per-warning overrides can silence one cue.
+- **Test harness:** standalone runs use a runner file per process, so parallel runs never overwrite each other.
+- **Tests (E2):** class buffs 192, weapon enchants 189, class cues 266, pets 349, new spell alerts 7,123, auto train 23, talent planner 28, FHK Gear 703.
+- **Probes added:** CLASS_KITS_PROBES.md.
+
+### Scenario review: what a real player would find silly (Claude + review agent; fixes by agents A, B, D, E, F and the lead; 2026-10-06)
+- **Why:** player: "things like this we really need to scrutinise when we're developing here".
+- **Review:** [SCENARIO_REVIEW_2026-10-06.md](SCENARIO_REVIEW_2026-10-06.md). It walked every feature for 9 classes, at levels 1-60, in 14 situations. 52 findings (17 must), E1.
+- **Shared fixes:**
+  - **S2:** `NS.EllesmereAway(kind)` in Bootstrap: no reminders while dead, on a taxi or in a vehicle, and no buff or made-item reminders while mounted. All Forever APIs were checked in the docs.
+  - **S1:** a cue's own sound now replaces the lane sound instead of playing on top of it. `ShowEllesmereWarning` takes a 6th argument; a module set to None keeps the lane's sound.
+- **Class Supplies (lead):**
+  - **S22:** a per-item Warn Below (four Ankhs are plenty; ten Symbols of Kings are not).
+  - **S23:** Smart warnings name a reagent at a vendor only when that vendor sells it ("Buy Flash Powder here"); entering rest shows them for 10 s.
+  - **S24:** no shards gives one line, "No Soul Shards (Healthstone, Soulstone)".
+  - **S25:** the away rule applies.
+  - **S26, S27:** feathers, Rune of Portals, Symbol of Divinity and Thieves' Tools are off by default.
+- **Auto Train (lead):**
+  - **S46:** at a weapon master nothing is bought unless Weapon Masters Too is on. The class's spell list (ClassTrainingData) tells a class trainer from a weapon master.
+  - **S47:** upgrades of spells you know are trained before new spells.
+- **Others (lead):**
+  - **S48:** the talent plan says why it paused while points wait.
+  - **S49:** no Cheetah advice while swimming.
+  - **S50:** the gathering reminder follows the away rule.
+  - **S51:** Infernal and Ritual of Doom dim without their reagent.
+- **Class Buffs (A):**
+  - **S31:** Shadowform out of combat only, with a 10 s grace.
+  - **S32:** Quiet While Resting (default on).
+  - **S33:** a 1.6 s seal grace after a drop or a Judgement, non-critical by default.
+  - **S34:** shields out of combat, Low off.
+  - **S35:** Thorns off.
+- **Class Cues (D):**
+  - **S40:** never "leave Defensive Stance" hints while grouped or in an instance.
+  - **S41:** the Revenge hint only after Defensive Stance was used in the last 5 min.
+  - **S42:** Slice and Dice at 2+ points, skipped under 35% target health.
+  - **S43:** the opener cue only within 10 yd.
+- **New Spell Alerts (E):**
+  - **S44:** mage teleports and portals are counted at the portal trainer, not the class trainer.
+  - **S45:** at a trainer, chat says how many you can afford.
+- **FHK Gear (lead):** non-gear loot is your roll by default, with Player Roll / Greed / Need up to a rarity. Bind on Equip Up To. Mounts, pets, recipes, quest items and keys are always your roll.
+- **Weapon Enchants (B):**
+  - **S36:** missing and none-in-bags merge into one line; none-in-bags shows only when resting or at a vendor.
+  - **S37:** expiring at min(setting, 20% of the enchant's duration).
+  - **S38:** for other classes the master toggle is the stone and oil reminder.
+  - **S39:** away rule.
+- **Hunter and warlock pets, warnings, ammo (F):**
+  - **Pet On Passive** (hunter, warlock).
+  - **Missing / Dead Pet:**
+    - an out-of-combat mode (3 s settle);
+    - I Play Without A Pet, plus Lone Wolf;
+    - warlock Summon Demon, quiet under Demonic Sacrifice.
+  - **Health Funnel Reminder** (no range read: unverified).
+  - **Pet Level** as a 10 s notice.
+  - **Not Shooting** cue.
+  - **Per-warning lane and sound overrides** (Automatic / Top Lane / Above Character), using Ellesmere's alert sound catalogue.
+  - **Previews:** the combat lane gets one.
+  - **Fonts:** warning text uses Ellesmere's module font with its shadow.
+  - **Ammo warnings:**
+    - hunter only;
+    - a separate off-by-default option for warriors and rogues;
+    - the count totals fitting ammo ("Low Sharp Arrow (40): 1000 More In Bags").
+  - **Hunter's Mark:** a partner's Mark counts.
+  - **Pet Idle:** quiet on Passive or while the target is held.
+  - **Pet element colours** gained swatches, and warlocks get Pet Auras / Pet Target.
+- **Vendor Restock engine + Auto-Buy Ammo** (`AmmoBuy.lua`, Warnings > VENDOR RESTOCK, off by default):
+  - **Budget per visit:** your money, minus Keep At Least (default 0) and the repair bill, capped at Max Spend Per Visit (default 25%). It is spent from a running balance.
+  - **Order:** a minimum pass then a fill pass.
+  - **Purchases:**
+    - whole vendor bundles;
+    - bag families and Leave Free Bag Slots (2);
+    - a no-gain skip;
+    - Shift skips the visit;
+    - one chat summary.
+  - **Ammo:**
+    - **What it buys:** the best usable common tier, never worse than the equipped ammo unless you are low.
+    - **Modes:** Fill Quiver (default) / Fill Quiver And Bags / Keep At Least (1000 hunter, 200 warrior or rogue).
+    - **New tiers:** 200 of a newly unlocked tier.
+    - **Next-tier bridge:** within 1 level, or 2 at 75%+ XP, buy 200 only.
+    - **Use Up Old Ammo:** older ammo counts, but never two or more tiers behind.
+- **In progress:** food, drink (mana users; mages greyed once they conjure), class reagents and pet food categories on the engine.
+- **Tests (E2):** auto train 20, class supplies 184, class buffs 184, weapon enchants 165, class cues 251, new spell alerts 7,120, pet 318, hunter cues 145, restock and ammo 123. FHK Gear 697. Full `npm test` passes, with standalone runs on all nine classes.
+
+### Class kits: buff bar, weapon enchants, class supplies, class cues, customisability (Claude + build agents A-D, G; 2026-10-06)
+- **Why:** player: "paladins have auras mages have armor rogue has poisons ... timers on weapon poisons ... a behind target indicator ... similar to our range indicator ... with two colours". Plan: [BUILD_PLAN_CLASS_KITS_2026-10-06.md](BUILD_PLAN_CLASS_KITS_2026-10-06.md). Everything is off by default, registers no events while off, and is class gated (no frames, events or rows for a class without the feature).
+- **Class Buff Bar** (`ClassBuffs.lua`, Unit Frames > CLASS BUFFS, all classes but hunter and rogue):
+  - click-to-cast buttons for paladin auras, seals and blessings, priest Inner Fire / Fortitude / Shadowform, mage armors and Intellect, warlock armor, shaman shields, druid Mark / Thorns / Omen (caster form), warrior Battle Shout;
+  - rank-aware by name; missing and expiring cues;
+  - no cues while dead, mounted, on a taxi or in a vehicle.
+- **Weapon Enchants** (`WeaponEnchants.lua`, Unit Frames > WEAPON ENCHANTS): a pod per weapon with poison, imbue, stone or oil, timer, charges and bag count.
+  - Click applies the chosen item out of combat (Blizzard's secure `target-slot`).
+  - Rogues pick a poison per hand; shamans a preferred imbue.
+  - Data comes from Forever DB2 build 1.60.1.70205 (E1).
+- **Class Supplies** (`ClassStock.lua`, Warnings > CLASS SUPPLIES): reagents and made items with counts, plus click to create.
+  - Covers shards, stones, Ankh, powders, conjures, runes, symbols, candles and seeds.
+  - Soul bag full and a Soulstone-on-someone timer.
+  - **Lead review fix:** a new **Smart** default for its warnings. Bought reagents warn only when resting or at a vendor; made items warn out of combat. A rogue without Flash Powder is no longer nagged across the zone.
+- **Class Cues** (`ClassCues.lua`):
+  - **Behind Indicator** (rogue, druid; Resource Bars) in two colours, with new `behind` (#FEF367) and `front` tokens.
+  - **Energy Tick Spark** (rogue, cat druid).
+  - **Warnings > CLASS CUES:** Stealth / Prowl First, Must Be Behind, warrior stance, Leave Form, stealth opener, reactive glows (Overpower, Revenge, Execute, Victory Rush, Riposte), stance mismatch hint and Slice and Dice.
+  - The error names were checked against Forever's GlobalStrings (wago.tools build 1.60.1.70205, E1).
+  - **Lead review fix:** fresh evidence now wins over "it targets you", and a stunned or incapacitated target (Gouge, Cheap Shot, Kidney Shot, Sap, Blind, Pounce, Bash, Hammer of Justice and others) reads unknown instead of In Front. Without this, Gouge, step behind, Backstab always showed IN FRONT.
+- **Customisability polish** (agent G): range, attack, range bar, XP bar, damage flash, key press and swing timer sections moved to cogs and swatches. Dependent rows grey out with the master toggle's name, and each section has its own confirmed Reset. The Target of Target bar now turns pet green when the target attacks your pet (`totOnPet`), as its tooltip promised.
+- **New Spell Alerts** (`RankNotifier.lua` + generated `ClassTrainingData.lua`, Warnings > NEW SPELLS; agent E):
+  - It says "New: Instant Poison III" or "N new spells at your trainer" on level-up, at login and on a Poisons skill-up, in the lane and/or chat.
+  - Ignore list; it waits out combat and, optionally, resting.
+  - At the class trainer, the trainer's own list corrects the data for the session.
+  - Data comes from Forever's client tables (wago.tools DB2 build 1.60.1.70205), generated by `tools/GenerateTrainingData.js` (E1): 403 spells, 1,415 ranks. It is cross-checked against foreverdb.net, with differences listed in CLASS_KITS_PROBES.md. No WhatsTraining data.
+- **Class pages filled** for every class. A standalone check fails if a class-page row names an option that does not exist.
+- **New TOC files:** `ClassBuffs.lua`, `WeaponEnchants.lua`, `ClassStock.lua`, `ClassCues.lua`. A full client restart is needed.
+- **Tests (E2):**
+  - class buffs 162, weapon enchants 147, class supplies 170, class cues 229, customisability 662;
+  - standalone on all nine classes (Hunter 680 rows, Warrior 431, Paladin 447, Rogue 489, Priest 445, Shaman 441, Mage 435, Warlock 553, Druid 501);
+  - themes 611; installer pass.
+- **E3 owed:** the probes in each module's agent report, gathered in HANDOVER.
+
+## 1.9.4 test build (adversarial review fixes; FHK Gear 0.5.2)
+
+### Adversarial review: every finding fixed, designed or deferred (Claude, 2026-10-06)
+- **Why:** player: "performance/error reviews? have we comprehensively reviewed each feature, edge cases, race conditions, nils", then "parallel agents".
+- **How:**
+  - Ten read-only agents reviewed every companion and Gear file.
+  - Each finding was checked against the code before fixing.
+  - Full table, with fixed / by design / deferred and the reasons: [ADVERSARIAL_REVIEW_2026-10-06.md](ADVERSARIAL_REVIEW_2026-10-06.md).
+- **Publishing rule:** native-indicator changes, the power-text seed, chrome caps, the error lane, the chat fade and AutoGear pausing are now owner-only or off by default.
+  - Combat Layout restores its CVars once per character, and its Cooldown Manager undo finds bars by key.
+- **Correctness:**
+  - **Aspects:** another hunter's Pack or Wild is no longer read as yours; the combat-start paint uses combat rules; Only When Wrong takes no clicks.
+  - **Swing:** READY bars stay full after Ellesmere idles the row; the cursor melee ring no longer blinks on every Auto Shot; the one-ring colours are correct; the dual-wield melee clock no longer restarts.
+  - **Range:** a stale bracket no longer hides a live Shooting or Melee answer; this is also ported to FHK's own `RangeLogic.lua`.
+  - **Pet food:** the list view draws from every bag; stale Edit / Delete links are hidden; mid-feed view changes clean up; Blizzard bags under the gamepad UI fall back to the row.
+  - **Unit frames:** recycled plates drop the old unit's marks; the rarity badge shows on a plate that turns hostile.
+  - **XP:** native dividers are found (`_divHost`); the 9.3.8 gradient colour is read correctly; the quest overlay returns when Ellesmere's own is turned off.
+  - **Themes:** swatch edits survive a preset switch; Restore refreshes plates and treats missing dark-mode toggles as off.
+- **Performance:**
+  - Unit events limited to drawn units, with a 0.05 s repaint limit.
+  - Range measurements cached for 0.05 s per unit.
+  - Plate-add bursts coalesced into one sweep per frame.
+  - The resource sweep and the standalone swing ticker run only when needed.
+  - Icon-edge and fill caches no longer allocate per tint.
+- **Tests:**
+  - `RunThemeChecks.js` joins `npm test`. It had been failing unnoticed since the owner-only gating: its General-page check now builds as the owner.
+  - On a stock 9.3.8 tree the options-extension block is skipped, since only the local core patch has that file.
+  - New mocked checks: swing READY (2), cursor rings (3), standalone ticker (2), dual-wield clock, range bracket (2), pet food (6), Combat Layout bar keys, themes (3).
+- **Tester zip:** `dist/ForeverCompanion-1.9.4_FHKGear-0.5.2_test.zip`, 84 files, docs redacted, plus this review.
+  - The zip now uses forward-slash paths. PowerShell 5.1's `Compress-Archive` writes backslashes, which flatten into odd file names with Mac or Linux unzip; the 1.9.3 zip had that problem.
+  - Clean-room check: unzipped beside stock 9.3.8 with no other addons, the code is byte-identical to live and the standalone harness passes. Windows' own extractor also opens it.
+- **Version:** 1.9.4. **E1/E2 only**; in-game checks 22-31 added to `IN_GAME_CHECKS_2026-10-05.md`. Not pushed.
+
+## 1.9.3 (pet food row, Hunter cues, priority 2/3, leveling helpers; new TOC files: full restart)
+
+### Tester package: no-overwrite proof, dependencies and a self-contained zip (Claude, 2026-10-06)
+- **Why:** player: make sure nothing overwrites keybinds or macros, that everything displays without Forever Hunter Keys, and that the package holds everything testers need.
+- **Keybinds, macros and game settings (code audit):**
+  - The only binding and macro writer is the Quest Bar (`QuestBar.lua`). Its option was already hidden without ForeverHunterKeys, but `/fhkquestbar on` still worked: now refused without FHK. Turning it off still works.
+  - The only CVar writers are Hunter Polish and Combat Layout (owner-only, with undo) and two visible toggles that change a game setting when the player flips them (soft-target sword icons, object interact icon).
+  - The standalone harness now also types `on` and `apply` into every slash command; nothing writes a binding, macro or CVar.
+- **Dependencies:**
+  - The companion's OptionalDeps gain EllesmereUICooldownManager and EllesmereUIRaidFrames (both read, neither declared before).
+  - FHK Gear's gain EllesmereUIBags (bag markers).
+  - Every artwork path the plugins reference exists either in their own folder or in stock EllesmereUI 9.3.8.
+- **Tester zip:** `FHK-Ellesmere-Patch/dist/ForeverCompanion-1.9.3_FHKGear-0.5.1_test.zip`.
+  - Contents: the two addon folders, README, FEATURES.md, and the new TESTERS.md (install, what to try, how to report).
+  - Clean-room check: unzipped next to stock EllesmereUI 9.3.8 with no other addons (`.dev/staged-release`), the standalone harness passes. The file set matches live, with docs redacted.
+- **Stale texts fixed:** the XP number label; the soft-target tooltip no longer mentions the owner-only Combat Layout.
+- **E1/E2** only; all suites pass. Not pushed.
 
 ### Release pass: Ellesmere row tools, owner-only presets, Ellesmere 9.3.8, XP formats, performance (Claude, 2026-10-05)
 - **Why:** player requests before publishing:
@@ -294,7 +640,7 @@ E1 = static checks, E2 = mocked integration, E3 = seen working in game. Only E3 
 - **E1/E2:** `/fhkprobe blocked` copies the last owned-addon block, exact action, attribution and stack for FHKEllesmere, ForeverHunterKeys or FHKGear. It prints before attempting copy-window UI and does not run another probe. The previous `/fhk blocked` only records ForeverHunterKeys, which explains the empty report with an FHKEllesmere popup. Diagnostics stay per character, outside profile exports.
 - **E1/E2:** a five-minute callback removes the targeting watcher even when no later game event arrives; another full probe extends its lifetime. Removed the probe's instruction to call `/reload`; no ReloadUI call was added. The Feed Pet cursor sample is now confirmed, but food filtering/flyout is still unbuilt and must distinguish Feed Pet from other targeting spells.
 - **E3 observations only:** player reports prove Feed Pet `SpellIsTargeting` true, plain crit/hit outside combat and secret crit/hit in the other sample. The popup names FHKEllesmere. A later screenshot shows the updated probe reporting `combat log unavailable: no public reader`. None proves the new features or blocked-action fix. See [second probe evidence](PROBE_2026-10-04_SECOND_RUN.md).
-- **Checks:** 47 owned Lua files validate; **2869 + 161 aspect + 143 pet + 26 probe = 3199** mocked checks pass. ProbeTests and its suite runner also pass ASCII/Lua 5.1 parsing. Gear remains 0.5.1: 467 checks / 17 TOC files pass. Companion and Gear live Check each report zero differences. Companion TEMP UI-only Check -> Apply (3 changed files) -> Check ends at zero differences; existing fixture `C:/Users/<name>/AppData/Local/Temp/fhk-add-list-190-b69b1d2ee5ea4770b52d4f62cfd08ad0`. No live Apply, third-party, SavedVariables or upstream writes.
+- **Checks:** 47 owned Lua files validate; **2869 + 161 aspect + 143 pet + 26 probe = 3199** mocked checks pass. ProbeTests and its suite runner also pass ASCII/Lua 5.1 parsing. Gear remains 0.5.1: 467 checks / 17 TOC files pass. Companion and Gear live Check each report zero differences. Companion TEMP UI-only Check -> Apply (3 changed files) -> Check ends at zero differences; existing fixture `%TEMP%/fhk-add-list-190-b69b1d2ee5ea4770b52d4f62cfd08ad0`. No live Apply, third-party, SavedVariables or upstream writes.
 - **Loading:** no new TOC entry in 1.9.1; the earlier 1.9.0 aspect/pet files still require the full client restart. User requested a wrap-up and handover to Claude; no further Add features were started.
 - **E3, limited retest:** after loading the update the player reported two probe runs without another blocked-action popup. `/fhkprobe blocked` reported no owned-addon block since the patch loaded. Record the probe regression as no longer reproduced in those two runs; the original exact protected action was never captured, and the broader aspect/pet secure-action acceptance remains open.
 
@@ -309,7 +655,7 @@ E1 = static checks, E2 = mocked integration, E3 = seen working in game. Only E3 
 - **E1/E2:** `petElements` joins PROFILE_KEYS, Unit Frames Reset and profile resync; feeding lives in the existing profile-scoped `warnings` table. Settings persist with profiles; Reset stops features. Static search labels avoid settings/UI writes. Pet modules add no repeating timer or OnUpdate; target-health and XP events do not scan auras.
 - **Validation:** Lua 5.1/ASCII/TOC checks pass for **47 owned Lua files**. `RunIntegration.js` now runs **2869 integration + 161 aspect + 143 pet checks**. New fixtures cover attachment boundaries, debuff-first selection, burst coalescing, no cross-component reads, tooltip caches, nil/secret APIs, missing/dead pet, combat changes, owner XP events, training subtraction, profiles/reset and feeding states. Auto Shot toggling alone does not imply weaving; a recent ranged swing does. Advice preview cannot cast a fake recommendation. Gear stays 0.5.1: **467 checks / 17 TOC files PASS**. E1/E2 only; no new E3 or measured CPU/FPS claim.
 - **Loading/acceptance:** full client restart; three new companion TOC files in this batch. [Pet checks](PET_ACCEPTANCE_2026-10-04.md), [aspect checks](ASPECT_ACCEPTANCE_2026-10-04.md). Original pre-batch snapshot remains `Snapshot-20261004-pre-add-list-184918.zip`. No vendor, SavedVariables or live installer Apply writes.
-- **Distribution, E2:** refreshed companion 1.9.0 payload; live Check reports 0 differences. Clean temporary UI-only Check -> Apply -> Check passes for 42 files; final single-file update also passed Check -> Apply -> Check. Fixture `C:/Users/<name>/AppData/Local/Temp/fhk-add-list-190-b69b1d2ee5ea4770b52d4f62cfd08ad0`. Unchanged Gear 0.5.1 live Check reports 0 differences. No live Apply.
+- **Distribution, E2:** refreshed companion 1.9.0 payload; live Check reports 0 differences. Clean temporary UI-only Check -> Apply -> Check passes for 42 files; final single-file update also passed Check -> Apply -> Check. Fixture `%TEMP%/fhk-add-list-190-b69b1d2ee5ea4770b52d4f62cfd08ad0`. Unchanged Gear 0.5.1 live Check reports 0 differences. No live Apply.
 
 ### Add list item 1: aspect element (Codex, 2026-10-04)
 - **E1/E2:** completed the preserved, previously unloaded aspect draft as `AspectLogic.lua` and `AspectBar.lua`. Enable **Aspect Element** under **Forever Companion -> Unit Frames -> Aspects**. Defaults OFF. Icon shows the active aspect, advice badge and optional name; Bar shows learned secure spell buttons; Current Only opens that bar on hover. Viper/Falcon are excluded. Key labels read actual spell/macro bindings; no binding writes.

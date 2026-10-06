@@ -8,6 +8,14 @@ local function Plain(v) return not (issecretvalue and issecretvalue(v)) end
 local function Num(v) return Plain(v) and type(v)=='number' and v==v and v>-math.huge and v<math.huge end
 local function Str(v) return Plain(v) and type(v)=='string' end
 local function Tab(v) return Plain(v) and type(v)=='table' end
+-- Color keys: a fixed RGB, or a NS.Colours token name (with a fixed fallback).
+P.COLORS={target={.25,.84,.66},xp='xpFill',harm={1,.3,.25},cleanse='caution'}
+P.FALLBACK={xp={.46,.18,.7},cleanse={1,.82,0}}
+function P.ValidColor(c)
+    if not Tab(c) then return false end
+    for i=1,3 do if not Num(c[i]) or c[i]<0 or c[i]>1 then return false end end
+    return true
+end
 local function Read(fn,...)
     if type(fn)~='function' then return nil,false end
     local ok,a,b=pcall(fn,...)
@@ -24,7 +32,22 @@ function NS.EllesmerePetElementSettings()
         elseif not Num(s[k]) or s[k]<limits[k][1] or s[k]>limits[k][2] then s[k]=v end
     end
     s.count=math.floor(s.count)
+    -- Per-element colors (review C11/H8): {r,g,b} in 0..1, anything else falls back.
+    if s.colors~=nil and not Tab(s.colors) then s.colors=nil end
+    if s.colors then
+        for k,c in pairs(s.colors) do
+            if not P.COLORS[k] or not P.ValidColor(c) then s.colors[k]=nil end
+        end
+    end
     return s
+end
+function P.Color(key)
+    local s=FHKEllesmereDB and Tab(FHKEllesmereDB.petElements) and FHKEllesmereDB.petElements
+    local c=s and Tab(s.colors) and s.colors[key]
+    if P.ValidColor(c) then return c[1],c[2],c[3] end
+    local d=P.COLORS[key]
+    if type(d)=='string' then local t=NS.Colours and NS.Colours[d];if P.ValidColor(t) then return t[1],t[2],t[3] end;d=P.FALLBACK[key] end
+    return d[1],d[2],d[3]
 end
 local driver=CreateFrame('Frame')
 local host,root,target,status,xp
@@ -100,7 +123,7 @@ local function Build()
     end
     if cfg.xp and not xp then
         xp=CreateFrame('StatusBar',nil,Parent());xp:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8');xp:SetMinMaxValues(0,1)
-        local color=NS.Colours and NS.Colours.xpFill or {.46,.18,.7};xp:SetStatusBarColor(color[1],color[2],color[3],1);xp.border=Border(xp)
+        xp:SetStatusBarColor(P.Color('xp'));xp.border=Border(xp)
         xp.text=xp:CreateFontString(nil,'OVERLAY');Font(xp.text,9);xp.text:SetPoint('CENTER',xp,'CENTER')
         -- Unspent training points (gold) and the pet's stance letter, on the bar itself.
         xp.badge=xp:CreateFontString(nil,'OVERLAY');Font(xp.badge,9);xp.badge:SetPoint('RIGHT',xp,'RIGHT',-2,0)
@@ -116,7 +139,7 @@ local function Build()
         target:SetAttribute('type','target');target:SetAttribute('unit','pettarget');target:RegisterForClicks('AnyUp')
         target.border=Border(target)
         target.health=CreateFrame('StatusBar',nil,target);target.health:SetAllPoints(target);target.health:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
-        target.health:SetMinMaxValues(0,1);target.health:SetStatusBarColor(.25,.84,.66,1)
+        target.health:SetMinMaxValues(0,1);target.health:SetStatusBarColor(P.Color('target'))
         target.name=target:CreateFontString(nil,'OVERLAY');Font(target.name,10);target.name:SetPoint('BOTTOMLEFT',target,'TOPLEFT',0,2)
         target.name:SetJustifyH('LEFT');target.name:SetWordWrap(false)
         target.value=target:CreateFontString(nil,'OVERLAY');Font(target.value,9);target.value:SetPoint('CENTER',target,'CENTER')
@@ -163,8 +186,8 @@ function P.PaintAuras()
             local dispellable=item.harmful and cfg.dispel and canCleanse and Str(a.dispelName) and cleanse[a.dispelName]
             b.tooltip=(Str(a.name) and a.name or '?')..(dispellable and '\nMend Pet may cleanse this effect.' or '')
             if b.hovered and EUI.ShowWidgetTooltip then EUI.ShowWidgetTooltip(b,b.tooltip) end
-            if dispellable then PaintBorder(b.border,1,.82,0)
-            elseif item.harmful then PaintBorder(b.border,1,.3,.25)
+            if dispellable then PaintBorder(b.border,P.Color('cleanse'))
+            elseif item.harmful then PaintBorder(b.border,P.Color('harm'))
             else PaintBorder(b.border,0,0,0) end
             if Num(a.duration) and a.duration>0 and Num(a.expirationTime) and a.expirationTime>now then
                 b.cooldown:SetCooldown(a.expirationTime-a.duration,a.duration)
@@ -184,10 +207,16 @@ function P.RefreshAuras()
     elseif status then status:SetText('') end
     P.PaintAuras()
 end
+local targetTicker -- pettarget health poll (review AP4)
 function P.PaintTarget()
     if not target then return end
     local visible=enabled and cfg.target and PetAlive() and Read(_G.UnitExists,'pettarget')==true
     target:SetAlpha(visible and 1 or 0)
+    -- The client sends no unit events for compound tokens like pettarget (review AP4): poll its
+    -- health four times a second, only while there is a pet with a target (review R2-18).
+    if visible and not targetTicker and C_Timer and C_Timer.NewTicker then
+        targetTicker=C_Timer.NewTicker(.25,function() P.PaintTarget() end)
+    elseif not visible and targetTicker then targetTicker:Cancel();targetTicker=nil end
     if not visible then return end
     local name=Read(_G.UnitName,'pettarget')
     target.name:SetText(Str(name) and name or '?')
@@ -240,7 +269,14 @@ function P.PaintXP()
             if stance=='PET_MODE_PASSIVE' then local c=NS.Colours and NS.Colours.danger or {1,.3,.25};xp.stance:SetTextColor(c[1],c[2],c[3]) else xp.stance:SetTextColor(.96,.945,.925) end
         end
     end
-    xp.tooltip=label..'\nLoyalty: '..(Str(loyalty) and loyalty or '?')..'\n'..training..
+    -- Pet level against yours (review H6), public levels only.
+    local petLevel,myLevel=Read(_G.UnitLevel,'pet'),Read(_G.UnitLevel,'player')
+    local levelLine=''
+    if Num(petLevel) and Num(myLevel) and petLevel>0 and myLevel>0 then
+        local behind=myLevel-petLevel
+        levelLine='\nLevel: '..petLevel..(behind>0 and (' ('..behind..' below you)') or '')
+    end
+    xp.tooltip=label..levelLine..'\nLoyalty: '..(Str(loyalty) and loyalty or '?')..'\n'..training..
         (st and ('\nStance: '..st[2]) or '')..(#abilities>0 and ('\nAbilities: '..table.concat(abilities,', ')) or '')
 end
 local function Flush()
@@ -280,9 +316,12 @@ function NS.SyncEllesmerePetElements()
     if not OOC() then pending=true;driver:RegisterEvent('PLAYER_REGEN_ENABLED');return end
     epoch=epoch+1;pending=false;queued=false;dirtyAura,dirtyTarget,dirtyXP=false,false,false
     driver:UnregisterAllEvents()
+    if targetTicker then targetTicker:Cancel();targetTicker=nil end
     local s=NS.EllesmerePetElementSettings()
     local _,_,class=Read(_G.UnitClass,'player')
-    enabled=(s.auras or s.target or s.xp) and class=='HUNTER'
+    -- Warlock demons get auras and the target button; the XP bar (pet experience, loyalty,
+    -- training points) is hunter only.
+    enabled=class=='HUNTER' and (s.auras or s.target or s.xp) or class=='WARLOCK' and (s.auras or s.target) or false
     if not enabled then
         NS.ObserveEllesmerePetBar=nil
         if root then root:Hide() end
@@ -295,9 +334,10 @@ function NS.SyncEllesmerePetElements()
         return
     end
     cfg={};for k,v in pairs(s) do cfg[k]=v end
+    if class~='HUNTER' then cfg.xp=false;cfg.dispel=false end
     NS.ObserveEllesmerePetBar=Observe
     if not host and NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end
-    if host then Layout();RefreshTalent();P.RefreshAuras();P.PaintTarget();P.PaintXP() end
+    if host then Layout();RefreshTalent();P.RefreshAuras();P.PaintTarget();P.PaintXP();P.ApplyColors() end
     driver:RegisterEvent('PLAYER_ENTERING_WORLD');driver:RegisterEvent('PLAYER_REGEN_ENABLED')
     driver:RegisterUnitEvent('UNIT_PET','player')
     if cfg.auras then driver:RegisterUnitEvent('UNIT_AURA','pet');driver:RegisterEvent('SPELLS_CHANGED') end
@@ -314,9 +354,21 @@ function NS.SyncEllesmerePetElements()
     else driver:RegisterUnitEvent('UNIT_FLAGS','pet')
     end
 end
-function P.State() return {root=root,target=target,xp=xp,cells=cells,host=host,driver=driver,enabled=enabled,pending=pending,canCleanse=canCleanse} end
+-- Repaints the color choices in place (no layout, so it is safe in combat).
+function P.ApplyColors()
+    if xp then xp:SetStatusBarColor(P.Color('xp')) end
+    if target and target.health then target.health:SetStatusBarColor(P.Color('target')) end
+    if root and cfg then P.PaintAuras() end
+end
+function P.State() return {root=root,target=target,xp=xp,cells=cells,host=host,driver=driver,enabled=enabled,pending=pending,canCleanse=canCleanse,ticker=targetTicker} end
 function NS.AddEllesmerePetElementOptions(Row)
-    local labels={'Pet Auras','Pet Target','Pet Buffs','Pet Debuffs','Mend Pet Cleanse Edge','Pet XP Bar'}
+    -- Hunters get every row, warlocks the aura and target rows, other classes none; an
+    -- unreadable class shows everything.
+    local _,_,class=Read(_G.UnitClass,'player')
+    local hunter=class=='HUNTER' or not Str(class)
+    if not hunter and class~='WARLOCK' then return end
+    local labels=hunter and {'Pet Auras','Pet Target','Pet Buffs','Pet Debuffs','Mend Pet Cleanse Edge','Pet XP Bar','Reset Pet Element Colors'}
+        or {'Pet Auras','Pet Target','Pet Buffs','Pet Debuffs','Reset Pet Element Colors'}
     if EUI.IsSearchPrebuild and EUI.IsSearchPrebuild() then
         for i=1,#labels,2 do Row({type='label',text=labels[i]},labels[i+1] and {type='label',text=labels[i+1]} or EUI.BlankRowCfg()) end
         return
@@ -349,10 +401,24 @@ function NS.AddEllesmerePetElementOptions(Row)
     local xpBar=Toggle('Pet XP Bar','xp')
     xpBar.cog={title='Pet XP Bar',rows={Pop('Height','xpHeight')},disabled=NoXP,disabledTooltip='Pet XP Bar'}
     xpBar.move={title='Pet XP Bar Position',rows={Pop('Vertical Offset','xpY')},disabled=NoXP,disabledTooltip='Pet XP Bar'}
+    -- Colors as inline swatches (review C11), reset below.
+    local function Swatch(key,tip)
+        return {tooltip=tip,hasAlpha=false,getValue=function() local r,g,b=P.Color(key);return r,g,b,1 end,
+            setValue=function(r,g,b)
+                local c={r,g,b}
+                if not P.ValidColor(c) then return end
+                local s=Settings();s.colors=Tab(s.colors) and s.colors or {};s.colors[key]=c;P.ApplyColors()
+            end}
+    end
+    -- The cleanse edge is hunter only (Mend Pet's talent); warlocks get no swatch for it (review R2-21).
+    auras.swatches=hunter and {Swatch('harm','Debuff Edge Color'),Swatch('cleanse','Cleanse Edge Color')} or {Swatch('harm','Debuff Edge Color')}
+    target.swatches={Swatch('target','Pet Target Fill Color')}
+    xpBar.swatches={Swatch('xp','Pet XP Fill Color')}
     Row(auras,target)
     Row(Toggle('Pet Buffs','buffs',NoAuras),Toggle('Pet Debuffs','debuffs',NoAuras))
-    Row(Toggle('Mend Pet Cleanse Edge','dispel',NoAuras),xpBar)
-    Row({type='label',text=host and 'Attached To Pet Frame' or 'Pet Frame Not Found'},EUI.BlankRowCfg())
+    if hunter then Row(Toggle('Mend Pet Cleanse Edge','dispel',NoAuras),xpBar) end
+    Row({type='label',text=host and 'Attached To Pet Frame' or 'Pet Frame Not Found: Turn On The Ellesmere Pet Frame'},
+        {type='button',text='Reset Pet Element Colors',onClick=function() Settings().colors=nil;P.ApplyColors() end})
 end
 driver:SetScript('OnEvent',P.OnEvent);driver:RegisterEvent('PLAYER_LOGIN')
 

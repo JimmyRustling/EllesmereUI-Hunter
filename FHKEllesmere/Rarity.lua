@@ -190,7 +190,15 @@ driver:SetScript('OnEvent',function(_,event,unit)
                 local dead=UnitIsDeadOrGhost(unit)
                 if not (issecretvalue and issecretvalue(dead)) and dead then icon:Hide() end
             end
-        elseif plate then PaintBadge(plate) end
+        elseif plate then Attach(plate)
+        elseif event=='UNIT_FLAGS' and type(unit)=='string' and not (issecretvalue and issecretvalue(unit)) and unit:find('^nameplate') then
+            -- A friendly unit turning hostile gets its plate from Ellesmere's own UNIT_FLAGS
+            -- watcher, which may run after us (review U9): look again next frame.
+            C_Timer.After(0,function()
+                local later=_G.EllesmereNameplates_NS
+                Attach(later and later.plates and later.plates[unit])
+            end)
+        end
     end
 end)
 Install()

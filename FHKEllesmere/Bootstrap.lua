@@ -2,7 +2,7 @@
 local addon, namespace = ...
 _G.FHKEllesmereNS = _G.ForeverHunterKeysNS or namespace
 if EUI_CLIENT_BLOCKED then return end
-_G.FHKEllesmereNS.RefinementsVersion = '1.9.3'
+_G.FHKEllesmereNS.RefinementsVersion = '1.9.5'
 -- Personal setup (published-plugin rule): presets that change other parts of Ellesmere or
 -- WoW (action bar layout and look, chat fade, character sheet, XP bar, fonts, nameplate
 -- range fade, swing timer setup, quest-bar keys and macros) apply by themselves only
@@ -72,7 +72,31 @@ _G.FHKEllesmereNS.Colours = _G.FHKEllesmereNS.Colours or {
     mirrorBreath = {.25, .6, 1},     -- breath bar
     mirrorFatigue = {1, .82, 0},     -- fatigue bar
     mirrorFeign = {.7, .62, .85},    -- Feign Death bar
+    -- Behind indicator (rogue, druid): two colours, as the player asked.
+    behind = {254/255, 243/255, 103/255}, -- behind the target: the rogue/energy lemon #FEF367
+    front = {1, .3, .25},            -- in front of the target (same red as danger, set separately)
 }
+-- One "away" rule for every cue (SCENARIO_REVIEW S2): reminders stay quiet while the player
+-- cannot act on them. kind: 'buff' (missing self-buff), 'made' (stone or conjure low),
+-- 'bought' (reagent, ammo or food low), 'act' (act-now: out of ammo, dead pet). Returns the
+-- reason ('dead', 'taxi', 'vehicle', 'mounted') or nil. An unreadable state is not a reason,
+-- so a client fault never silences a cue. Swimming never silences; resting is each module's
+-- own toggle (S32), read with IsResting.
+do
+    local function Yes(fn, ...)
+        if type(fn) ~= 'function' then return false end
+        local ok, v = pcall(fn, ...)
+        return ok and not (issecretvalue and issecretvalue(v)) and v == true
+    end
+    local MOUNTED = {buff = true, made = true, act = true}
+    function _G.FHKEllesmereNS.EllesmereAway(kind)
+        if Yes(UnitIsDeadOrGhost, 'player') then return 'dead' end
+        if Yes(UnitOnTaxi, 'player') then return 'taxi' end
+        if Yes(UnitInVehicle, 'player') or Yes(UnitHasVehicleUI, 'player') then return 'vehicle' end
+        if MOUNTED[kind] and Yes(IsMounted) then return 'mounted' end
+        return nil
+    end
+end
 -- Dark mode follows Ellesmere's own unit-frame switch (the Dark preset turns it on).
 -- In it, companion bars and rings go black and colour appears only as a thin
 -- state accent: colour has to mean something there (player principle).
@@ -194,6 +218,8 @@ function NS.CreateEllesmereFramedBlock(parent)
 end
 -- Solid icon artwork gets a square pixel border. Transparent glyphs get a
 -- black one-pixel silhouette, so swords/paws/bags stay recognisable shapes.
+local EDGE_OFFSETS={{-1,-1},{0,-1},{1,-1},{-1,0},{1,0},{-1,1},{0,1},{1,1}}
+local EDGE_SIDES={'TOP','BOTTOM','LEFT','RIGHT'}
 function NS.ApplyEllesmereIconEdge(icon,solid)
     if not icon or not icon.GetParent or not icon.GetTexture then return end
     local owner=icon:GetParent()
@@ -255,7 +281,7 @@ function NS.ApplyEllesmereIconEdge(icon,solid)
             h:ClearAllPoints();h:SetPoint('TOPLEFT',icon,'TOPLEFT',-px,px);h:SetPoint('BOTTOMRIGHT',icon,'BOTTOMRIGHT',px,-px)
             if state.strips then
                 for i,t in ipairs(state.strips) do
-                    local side=({'TOP','BOTTOM','LEFT','RIGHT'})[i]
+                    local side=EDGE_SIDES[i]
                     if i<=2 then
                         t:SetPoint(side..'LEFT',h,side..'LEFT',0,0)
                         t:SetPoint(side..'RIGHT',h,side..'RIGHT',0,0);t:SetHeight(px)
@@ -269,12 +295,15 @@ function NS.ApplyEllesmereIconEdge(icon,solid)
         end
         return
     end
-    local coords=icon.GetTexCoord and {icon:GetTexCoord()} or {0,1,0,1}
-    for _,v in ipairs(coords) do if not Public(v) then return end end
-    local changed=state.px~=px or state.source~=source or state.atlas~=atlas or state.alpha~=alpha or not state.visible
-    for i,v in ipairs(coords) do if not state.coords or state.coords[i]~=v then changed=true end end
-    if not changed then return end
-    local offsets={{-1,-1},{0,-1},{1,-1},{-1,0},{1,0},{-1,1},{0,1},{1,1}}
+    -- These hooks fire on every tint and show (review C5): compare in locals, allocate only on change.
+    local c1,c2,c3,c4,c5,c6,c7,c8=0,1,0,1
+    if icon.GetTexCoord then c1,c2,c3,c4,c5,c6,c7,c8=icon:GetTexCoord() end
+    if not (Public(c1) and Public(c2) and Public(c3) and Public(c4) and Public(c5) and Public(c6) and Public(c7) and Public(c8)) then return end
+    local old=state.coords
+    local same=old and old[1]==c1 and old[2]==c2 and old[3]==c3 and old[4]==c4 and old[5]==c5 and old[6]==c6 and old[7]==c7 and old[8]==c8
+    if same and state.px==px and state.source==source and state.atlas==atlas and state.alpha==alpha and state.visible then return end
+    local coords=same and old or {c1,c2,c3,c4,c5,c6,c7,c8}
+    local offsets=EDGE_OFFSETS
     for i,t in ipairs(state.copies) do
         if state.source~=source or state.atlas~=atlas then
             if atlas then t:SetAtlas(atlas) else t:SetTexture(source) end
@@ -323,13 +352,16 @@ local function GoldHue(r,g,b)
     h=h*60
     return h>=35 and h<=65
 end
-local fillCache={}
+local fillCache,fillCount={},0
 function NS.EllesmereReadableBarFill(r,g,b)
     if not Public(r) or not Public(g) or not Public(b) or type(r)~='number' or
         type(g)~='number' or type(b)~='number' or r~=r or g~=g or b~=b or
         r<0 or g<0 or b<0 or r>1 or g>1 or b>1 then return end
-    local id=string.format('%.6f/%.6f/%.6f',r,g,b)
+    -- Quantised to 1/255 and bounded (review C8): gradient colour modes feed every RGB they draw.
+    local id=math.floor(r*255+.5)*65536+math.floor(g*255+.5)*256+math.floor(b*255+.5)
     local hit=fillCache[id];if hit then return unpack(hit) end
+    fillCount=fillCount+1
+    if fillCount>512 then fillCache,fillCount={},1 end
     local function L(v) return v<=.04045 and v/12.92 or ((v+.055)/1.055)^2.4 end
     local function Light(k) return .2126*L(r*k)+.7152*L(g*k)+.0722*L(b*k) end
     local text=NS.Colours.text

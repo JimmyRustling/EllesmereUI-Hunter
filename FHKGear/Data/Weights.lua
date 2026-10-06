@@ -241,7 +241,7 @@ ns.DefaultWeights = {
 	},
 	["ROGUE"] = {
 		["None"] = {
-			weapons = "dagger and any",
+			weapons = "any", -- FHK Gear (review G1): no spec yet means any weapon, not daggers only
 			Strength = E, Agility = 1.1, Stamina = 0.05, Intellect = E, Spirit = E,
 			Armor = 0.001, Dodge = E, Parry = E, Block = E, Defense = E,
 			SpellPower = E, SpellPenetration = E, Haste = 1.05, Mp5 = E,

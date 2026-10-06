@@ -13,6 +13,12 @@ local function Config()
     local db=ns and ns.ERB and ns.ERB.db
     return ns,db and db.profile and db.profile.swingTimer
 end
+-- Ellesmere's swing Gradient owns the row fill (suite review SF-10): our flat state colour
+-- would wipe it, and Ellesmere's change cache would never put it back.
+local function GradientOn(cfg) return type(cfg)=='table' and cfg.gradientEnabled==true end
+-- A row timer can be re-armed only through Ellesmere's own duration object (SF-15).
+local function Timer(row) return row._durObj and row._durObj.SetTimeFromStart and row._bar and row._bar.SetTimerDuration end
+local gradientWas
 -- Melee readiness only earns its colour when melee is an option (player review:
 -- a full violet MELEE READY bar at 30-35 yd was the loudest thing on screen).
 -- Range is sampled at most five times a second, and only while the row is ready.
@@ -22,10 +28,11 @@ end
 local nearAt,nearValue,knownValue,knownGuid
 local QUIET={.25,.26,.29}
 local function MeleeActionable(now)
-    if nearAt and now-nearAt<.2 then return nearValue end
+    -- The target is checked before the 0.2 s cache (review S6): a switch is answered at once.
     local guid=UnitGUID and UnitGUID('target')
     if issecretvalue and issecretvalue(guid) then guid=nil end
-    if guid~=knownGuid then knownGuid,knownValue=guid,nil end
+    if guid~=knownGuid then knownGuid,knownValue,nearAt=guid,nil,nil end
+    if nearAt and now-nearAt<.2 then return nearValue end
     local range=NS.GetUnitRange and NS.GetUnitRange('target')
     local s=range and range.state
     if s==nil or s=='unknown' then
@@ -36,6 +43,12 @@ local function MeleeActionable(now)
     end
     nearAt=now
     return nearValue
+end
+-- One palette pick per row per tick, without a closure (review S7).
+local NONE={}
+local function PickSwing(palette,isRanged,isMain,cue,both)
+    return isRanged and (cue and palette[cue] or palette.ranged) or
+        isMain and (both and palette.blocked or palette.melee)
 end
 -- Shared with the cursor rings, so MELEE READY means the same thing on both.
 NS.EllesmereMeleeActionable=MeleeActionable
@@ -193,6 +206,16 @@ local function RefineRows()
     local shell=_G.ERB_SwingTimerFrame
     local ns,cfg=Config()
     if not shell or not cfg or not cfg.enabled then driver:SetScript('OnUpdate',nil); return end
+    -- The gradient just came on: let Ellesmere repaint its rows from its own settings, so
+    -- no colour of ours stays under its change cache (SF-10).
+    local gradient=GradientOn(cfg)
+    if gradient~=gradientWas then
+        gradientWas=gradient
+        if gradient and ns and type(ns.ST_Apply)=='function' then
+            for _,state in pairs(rows) do state.color=nil end
+            pcall(ns.ST_Apply)
+        end
+    end
     local start,duration,finish=NS.GetCursorSwingClock('ranged')
     local meleeStart,meleeDuration,meleeEnd=NS.GetCursorSwingClock('melee')
     local now=GetTime()
@@ -254,9 +277,19 @@ local function RefineRows()
                 local fill=row._bar.GetStatusBarTexture and row._bar:GetStatusBarTexture()
                 -- A native repaint (Ellesmere's own swing events) gets our colour back
                 -- at once, so it never shows for a frame.
+                -- Ellesmere's IdleRow re-arms the bar empty (review S1): a native timer write
+                -- means the READY fill must be painted again on the next tick.
+                if row._bar.SetTimerDuration then hooksecurefunc(row._bar,'SetTimerDuration',function()
+                    if not state.timing then state.ready=nil end
+                end) end
+                -- Native restyles reset the spark to 8 px white (review S5): restyle it next tick.
+                if row._spark and row._spark.SetSize then hooksecurefunc(row._spark,'SetSize',function()
+                    if not state.sparking then state.sparkHeight=nil end
+                end) end
                 if fill then hooksecurefunc(fill,'SetVertexColor',function(self)
                     if state.painting then return end
                     if row._merged then state.color=nil;return end -- native hides merged rows
+                    if GradientOn(select(2,Config())) then state.color=nil;return end
                     local c=state.color
                     if c then state.painting=true;self:SetVertexColor(c[1],c[2],c[3],1);state.painting=nil end
                 end) end
@@ -272,7 +305,7 @@ local function RefineRows()
             -- colour when Weapon Spark Colors is on.
             if row._spark and not row._merged and (state.sparkHeight~=(cfg.height or 16) or state.sparkStamp~=sparkStamp) then
                 row._spark:SetTexture('Interface\\Buttons\\WHITE8x8')
-                row._spark:SetSize(1,cfg.height or 16)
+                state.sparking=true;row._spark:SetSize(1,cfg.height or 16);state.sparking=nil
                 local c=SparkColour(cfg,SparkKind(def))
                 if c then row._spark:SetVertexColor(c[1],c[2],c[3],1) else row._spark:SetVertexColor(1,1,1,.75) end
                 state.sparkHeight,state.sparkStamp=cfg.height or 16,sparkStamp
@@ -283,7 +316,7 @@ local function RefineRows()
                 -- Let the native event path update its live-row count and idle
                 -- visibility before correcting the duration to our shared clock.
                 local handler=shell:GetScript('OnEvent')
-                if handler and row:IsShown() then
+                if handler and row:IsShown() and Timer(row) then
                     handler(shell,'PLAYER_SWING',duration,def.type)
                     row._end,row._dur=finish,duration
                     row._durObj:SetTimeFromStart(start,duration)
@@ -339,12 +372,8 @@ local function RefineRows()
                 -- Dark mode: a black fill, and the state colour as a 2px strip along
                 -- the bottom of the fill, so colour only ever means a state.
                 local dark=NS.EllesmereDarkMode and NS.EllesmereDarkMode()
-                local function Pick(palette)
-                    return isRanged and (cue and palette[cue] or palette.ranged) or
-                        isMain and (both and palette.blocked or palette.melee)
-                end
-                local accent=Pick(NS.EllesmereSwingColors or {})
-                local color=dark and NS.darkFill or Pick(NS.EllesmereSwingFillColors or NS.EllesmereSwingColors or {})
+                local accent=PickSwing(NS.EllesmereSwingColors or NONE,isRanged,isMain,cue,both)
+                local color=dark and NS.darkFill or PickSwing(NS.EllesmereSwingFillColors or NS.EllesmereSwingColors or NONE,isRanged,isMain,cue,both)
                 -- Out of melee reach the melee row is quiet whether ready or cooling: an
                 -- Auto Shot resets the shared clock, which briefly reads as a melee
                 -- swing (player: violet flashed on every shot at range).
@@ -360,6 +389,7 @@ local function RefineRows()
                     if dark then accent=q else color=q end
                 end
                 local fill=row._bar.GetStatusBarTexture and row._bar:GetStatusBarTexture()
+                if GradientOn(cfg) then color=nil;state.color=nil end
                 if color and state.color~=color and fill then
                     state.painting=true; fill:SetVertexColor(color[1],color[2],color[3],1); state.painting=nil
                     state.color=color
@@ -389,9 +419,11 @@ local function RefineRows()
                     ready and 'AUTO SHOT READY' or 'AUTO SHOT') or
                     isMain and (raptor and ('MELEE - '..raptorName) or both and 'BOTH CD' or ready and 'MELEE READY' or 'MELEE')
                 if label and row._tag:GetText()~=label then row._tag:SetText(label) end
-                if ready and not state.ready then
+                if ready and not state.ready and Timer(row) then
                     row._durObj:SetTimeFromStart(now-1,1)
+                    state.timing=true
                     row._bar:SetTimerDuration(row._durObj,Enum.StatusBarInterpolation.Immediate,Enum.StatusBarTimerDirection.ElapsedTime)
+                    state.timing=nil
                     row._bar:SetValue(1)
                 end
                 state.ready=ready
@@ -511,7 +543,8 @@ local function Install()
         if bar and NS.FadeEllesmere then NS.FadeEllesmere(bar,false) end
     end
     hooksecurefunc(ns,'ST_Apply',function()
-        for _,state in pairs(rows) do state.color,state.sparkHeight,state.zoneSize=nil,nil,nil end
+        -- state.ready too (review S1): ST_Apply idles every row that is not live, emptying a READY fill.
+        for _,state in pairs(rows) do state.color,state.sparkHeight,state.zoneSize,state.ready=nil,nil,nil,nil end
         RefineRows()
         NS.PaintEllesmereClipMarker()
     end)

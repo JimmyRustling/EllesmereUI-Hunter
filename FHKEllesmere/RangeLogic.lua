@@ -73,7 +73,12 @@ function Range.Measure(probes, melee, ranged, shot, bracket)
     -- A measured 0-5 yard bracket is melee even when the swing-range API
     -- has not yet reported true for this target.
     if measured and high <= 5 and state ~= 'shoot' then state = 'melee' end
-    if low >= high then return 'unknown', 'Range unavailable' end
+    if low >= high then
+        -- A stale library bracket against a live yes/no answer (review R2): keep the answer,
+        -- drop the yards. Only a conflict with nothing else known is unavailable.
+        if state == 'shoot' or state == 'melee' then low, high, measured = 0, math.huge, false
+        else return 'unknown', 'Range unavailable' end
+    end
     if state == 'unknown' and Readable(ranged) and ranged == false then state = 'out' end
     if state == 'unknown' and measured then
         state = high == math.huge and 'beyond' or 'distance'

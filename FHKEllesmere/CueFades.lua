@@ -141,18 +141,33 @@ function NS.UpdateEllesmereMarkerFades()
     end
 end
 
-local opacityDefaults={enabled=true,target=1,focus=.85,mouseover=.75,idle=.55,out=.25}
+-- enabled has no stored default (suite review SF-4): Opacity Priority replaces Ellesmere's
+-- Non-Target and Out-of-Range opacity, so it is on by itself only on the owner's install
+-- (publishing rule). A value the player chose is kept (chosen=true marks it).
+local opacityDefaults={target=1,focus=.85,mouseover=.75,idle=.55,out=.25}
 local opacityOrder={'target','focus','mouseover'}
 local opacityFrame,opacityNative,opacityHover
-local function OpacityEnabled()
-    local s=FHKEllesmereDB and FHKEllesmereDB.nameplateOpacity
-    return FHKEllesmereDB~=nil and (not s or s.enabled~=false)
+local function Owner()
+    if NS.EllesmerePersonalSetup then return NS.EllesmerePersonalSetup()==true end
+    return _G.ForeverHunterKeysNS~=nil
 end
+local function OpacityEnabled()
+    if type(FHKEllesmereDB)~='table' then return false end
+    local s=FHKEllesmereDB.nameplateOpacity
+    local on=type(s)=='table' and s.enabled
+    if type(on)=='boolean' and (on==false or s.chosen==true or Owner()) then return on end
+    return Owner()
+end
+NS.EllesmereNameplateOpacityEnabled=OpacityEnabled
 function NS.EllesmereNameplateOpacitySettings()
-    if not FHKEllesmereDB then return opacityDefaults end
+    if type(FHKEllesmereDB)~='table' then return opacityDefaults end
     local s=FHKEllesmereDB.nameplateOpacity
     if type(s)~='table' then s={};FHKEllesmereDB.nameplateOpacity=s end
     for key,value in pairs(opacityDefaults) do if s[key]==nil then s[key]=value end end
+    -- Earlier versions stored enabled=true as the default for everyone: on a published
+    -- install that unchosen value goes back to following Ellesmere.
+    if s.enabled==true and s.chosen~=true and not Owner() then s.enabled=nil end
+    if s.enabled~=nil and type(s.enabled)~='boolean' then s.enabled=nil end
     return s
 end
 local function Flag(fn,...)
@@ -194,8 +209,20 @@ local function Priority(plate,reading)
 end
 function NS.ApplyEllesmereNameplateOpacity(plate,reading)
     if not opacityNative or not OpacityEnabled() or not plate or not plate.unit then return false end
+    -- The player's own Ellesmere Non-Target Opacity wins while it is set (SF-4).
+    local np=_G.EllesmereNameplates_NS
+    local nt=np and np._ntAlpha
+    if Number(nt) and nt<1 then
+        if plate._fhkOpacityState then plate._fhkOpacityState=nil;plate._ntCurAlpha=-1 end
+        return false
+    end
     local alpha,key=Priority(plate,reading)
     if alpha==nil then return false end
+    -- Ellesmere's Out-of-Range fade multiplies idle plates instead of our own out bucket.
+    local oor=plate._oorCurAlpha
+    if (key=='idle' or key=='out') and Number(oor) and np and Number(np._oorAlpha) and np._oorAlpha<1 then
+        alpha,key=OpacityValue('idle')*oor,'native range'
+    end
     local current=plate:GetAlpha()
     if not Number(current) then return true end
     plate._fhkOpacityState=key
@@ -234,10 +261,12 @@ function NS.SyncEllesmereNameplateOpacity()
             opacityFrame=CreateFrame('Frame')
             opacityFrame:SetScript('OnEvent',function(_,event,unit)
                 if event=='NAME_PLATE_UNIT_ADDED' then
-                    -- Native registration may run after our listener on this event.
-                    C_Timer.After(0,function()
+                    -- Paint now when the plate is already registered, so it never shows at
+                    -- full opacity for a frame; otherwise right after native registration.
+                    if np.plates and np.plates[unit] then np.NT_Apply(np.plates[unit])
+                    else C_Timer.After(0,function()
                         if OpacityEnabled() and np.plates and np.plates[unit] then np.NT_Apply(np.plates[unit]) end
-                    end)
+                    end) end
                 else ApplyOpacityAll() end
             end)
         end
@@ -261,9 +290,9 @@ function NS.SyncEllesmereNameplateOpacity()
 end
 function NS.AddEllesmereNameplateOpacityOptions(Row)
     Row({type='toggle',text='Nameplate Opacity Priority',
-        tooltip='Target, focus and mouseover stay readable even outside attack range. Idle plates use class attack range, or your native Custom range. While on, this replaces the Ellesmere Non-Target and No-Target Opacity for enemy plates; off hands opacity back to them.',
-        getValue=function() return NS.EllesmereNameplateOpacitySettings().enabled end,
-        setValue=function(v) NS.EllesmereNameplateOpacitySettings().enabled=v;NS.SyncEllesmereNameplateOpacity() end},
+        tooltip='Target, focus and mouseover stay readable even outside attack range. Idle plates use class attack range, or your native Custom range. Ellesmere Non-Target Opacity, when set below 100%, and its Out-of-Range fade still apply.',
+        getValue=function() return OpacityEnabled() end,
+        setValue=function(v) local s=NS.EllesmereNameplateOpacitySettings();s.enabled=v==true;s.chosen=true;NS.SyncEllesmereNameplateOpacity() end},
         {type='label',text='100% = fully visible; 0% = invisible'})
     local function Slider(text,key)
         return {type='slider',text=text..' Opacity %',min=0,max=100,step=5,

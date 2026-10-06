@@ -120,6 +120,7 @@ function NS.SyncEllesmereChromeVisibility()
     if mode~='native' then
         if not restores then restores={};rawset(db,'chromeVisibilityBefore',restores) end
         before=before or {};restores[name]=before
+        if NS.EllesmereStampSnapshot then NS.EllesmereStampSnapshot('chromeVisibilityBefore',name) end
         for _,key in ipairs(CHROME) do
             local s=p.bars[key] or {};p.bars[key]=s
             if not before[key] then

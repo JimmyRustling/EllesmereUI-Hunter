@@ -53,10 +53,10 @@ end
 local function Known(id)
     local book = C_SpellBook and C_SpellBook.IsSpellKnown
     local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player
-    local known = Read(book, id, bank)
-    if known == nil then known = Read(_G.IsPlayerSpell, id) end
-    if known == nil then known = Read(_G.IsSpellKnown, id) end
-    if type(known) == 'boolean' then return known end
+    -- Passive talents are not in the spellbook (review AP5): any API saying known counts.
+    local a, b, c = Read(book, id, bank), Read(_G.IsPlayerSpell, id), Read(_G.IsSpellKnown, id)
+    if a == true or b == true or c == true then return true end
+    if a == false or b == false or c == false then return false end
 end
 
 -- name -> {rank, maxRank} from whichever talent API the client offers.
@@ -84,13 +84,49 @@ local function TalentWindow()
     return any and byName or nil
 end
 
+-- Forever talents are a Traits tree (API audit 2026-10-06: the Classic talent-tab API is missing,
+-- so every talent read as rank 1 by its known spell). name -> {rank, maxRank} from the active
+-- config; nil when the client has no Traits config (other flavours, or before login).
+local function Traits()
+    local CT, T = C_ClassTalents, C_Traits
+    if not (CT and T) then return nil end
+    local config = Read(CT.GetActiveConfigID)
+    if type(config) ~= 'number' then return nil end
+    local info = Read(T.GetConfigInfo, config)
+    if type(info) ~= 'table' or type(info.treeIDs) ~= 'table' then return nil end
+    local byName, any = {}, false
+    for _, tree in ipairs(info.treeIDs) do
+        local nodes = Read(T.GetTreeNodes, tree)
+        for _, nodeID in ipairs(type(nodes) == 'table' and nodes or {}) do
+            local node = Read(T.GetNodeInfo, config, nodeID)
+            if type(node) == 'table' and type(node.entryIDs) == 'table' then
+                local active = type(node.activeEntry) == 'table' and node.activeEntry.entryID
+                for _, entryID in ipairs(node.entryIDs) do
+                    local entry = Read(T.GetEntryInfo, config, entryID)
+                    local def = type(entry) == 'table' and entry.definitionID and Read(T.GetDefinitionInfo, entry.definitionID)
+                    local name = type(def) == 'table' and type(def.spellID) == 'number' and SpellName(def.spellID)
+                    if name then
+                        -- A choice node ranks only its chosen entry.
+                        local rank = (active == nil or active == entryID) and node.activeRank or 0
+                        if type(rank) == 'number' and Plain(rank) then
+                            byName[name] = {rank = rank, maxRank = entry.maxRanks, source = 'talent tree'}
+                            any = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return any and byName or nil
+end
+
 local function Refresh()
     queued = false
-    local window = TalentWindow()
+    local window = Traits() or TalentWindow()
     for key, id in pairs(Talents.list) do
         local name, rank, method = SpellName(id), nil, nil
         local row = window and name and window[name]
-        if row then rank, method = row.rank, 'talent window'
+        if row then rank, method = row.rank, row.source or 'talent window'
         else
             -- A known talent spell proves at least one rank; an unreadable answer stays nil.
             local known = Known(id)
@@ -120,7 +156,7 @@ Talents.Refresh = Refresh
 
 if select(2, UnitClass('player')) == 'HUNTER' then
     driver = CreateFrame('Frame')
-    for _, event in ipairs({'PLAYER_LOGIN', 'SPELLS_CHANGED', 'CHARACTER_POINTS_CHANGED', 'PLAYER_TALENT_UPDATE',
+    for _, event in ipairs({'PLAYER_LOGIN', 'SPELLS_CHANGED', 'CHARACTER_POINTS_CHANGED', 'PLAYER_TALENT_UPDATE', 'TRAIT_CONFIG_UPDATED',
         'ACTIVE_TALENT_GROUP_CHANGED', 'PLAYER_LEVEL_UP'}) do
         pcall(driver.RegisterEvent, driver, event)
     end

@@ -4,13 +4,14 @@ if EUI_CLIENT_BLOCKED then return end
 local _,ns=...
 local S=ns.Safe
 local applying=false
-local CHOICES={source={auto=true,weights=true,forevergear=true},phase={auto=true,levelling=true,endgame=true},
+-- hunter: the Hunter Model source (review GU1); without it a profile using it failed to import.
+local CHOICES={source={auto=true,weights=true,forevergear=true,hunter=true},phase={auto=true,levelling=true,endgame=true},
     ratingUnits={unknown=true,percent=true,rating=true},comparisonModel={weights=true,rotation=true},
     weaponStyle={preset=true,any=true,['2h']=true,['dual wield']=true,['weapon and shield']=true,['dagger and any']=true},
     objective={damage=true},markerStyle={border=true,arrow=true,diamond=true,plus=true},greedMarkerStyle={border=true,coin=true,diamond=true,plus=true},
     markerPosition={TOPLEFT=true,TOPRIGHT=true,BOTTOMLEFT=true,BOTTOMRIGHT=true,CENTER=true},
-    hunterPet={auto=true,pet=true,none=true}}
-local LIMITS={autoEquipMaxQuality={0,5},phaseLevel={10,60},fightLength={1,600},meleeShare={0,1},incomingHits={0,10},useUptime={0,1},markerSize={8,48},markerOpacity={0.1,1},markerOffsetX={-32,32},markerOffsetY={-32,32},multiTargets={1,10},popDuration={3,30}}
+    hunterPet={auto=true,pet=true,none=true},rollNonGear={player=true,greed=true,need=true}}
+local LIMITS={autoEquipMaxQuality={0,5},equipBoEMaxQuality={0,5},rollNonGearMaxQuality={0,5},phaseLevel={10,60},fightLength={1,600},meleeShare={0,1},incomingHits={0,10},useUptime={0,1},markerSize={8,48},markerOpacity={0.1,1},markerOffsetX={-32,32},markerOffsetY={-32,32},multiTargets={1,10},popDuration={3,30},rollMinGain={0,50}}
 function ns.ParseProcRate(text)
     if not S.Text(text) or #text>512 then return nil,'Enter an item ID and a proc rate.' end
     local id,body=text:match('^%s*(%d+)%s*,%s*(.+)$')
@@ -32,7 +33,7 @@ function ns.ExportProfile(includeWeights,includeRules)
     local c,out=ns.Char(),{version=1,settings={}}
     for key in pairs(ns.CHAR_DEFAULTS) do out.settings[key]=S.Copy(c[key]) end
     out.settings.spec=S.Text(c.spec) and c.spec or nil
-    for _,key in ipairs({'rotation','procRates','ratingConversions','markerColours','hunterTalents'}) do out.settings[key]=S.Copy(c[key]) end
+    for _,key in ipairs({'rotation','procRates','ratingConversions','markerColours','hunterTalents','textColours'}) do out.settings[key]=S.Copy(c[key]) end
     if includeRules then out.rules={locked=S.Copy(c.locked),ignore=S.Copy(c.ignore),ignoreLinks=S.Copy(c.ignoreLinks)} end
     if includeWeights then out.weights=S.Copy(ns.Account().weights);out.imported=S.Copy(ns.Account().imported) end
     return out
@@ -57,6 +58,12 @@ local function NestedSetting(key,value)
     if key=='ratingConversions' then
         local supported={Crit=true,Hit=true,SpellCrit=true,SpellHit=true,Haste=true,Dodge=true,Parry=true,Block=true}
         return Map(value,function(stat,n) return S.Text(stat) and supported[stat] and Finite(n,0.000001,100000) end)
+    end
+    if key=='textColours' then
+        -- Colour tokens (review G12): only known keys, each a complete RGB in 0..1.
+        return Map(value,function(name,colour)
+            return S.Text(name) and ns.COLOUR_DEFAULTS[name]~=nil and ns.ValidColour(colour) and Map(colour,function(index) return S.Number(index) and index>=1 and index<=3 and index==math.floor(index) end)
+        end)
     end
     if key=='markerColours' then
         return Map(value,function(name,colour)
@@ -94,7 +101,7 @@ function ns.ValidateProfile(payload)
     end
     if payload.settings.spec~=nil and (not S.Text(payload.settings.spec) or #payload.settings.spec>64) then return nil,'Invalid Gear profile spec' end
     out.settings.spec=payload.settings.spec
-    for _,key in ipairs({'rotation','procRates','ratingConversions','markerColours','hunterTalents'}) do
+    for _,key in ipairs({'rotation','procRates','ratingConversions','markerColours','hunterTalents','textColours'}) do
         if payload.settings[key]~=nil then
             if not NestedSetting(key,payload.settings[key]) then return nil,'Invalid Gear profile table: ' .. key end
             out.settings[key]=S.Copy(payload.settings[key])
@@ -118,12 +125,18 @@ function ns.ValidateProfile(payload)
     end
     return out
 end
+-- What Gear may do by itself, and its confirmations, stay with the character: importing another
+-- player's profile never turns on their Auto-Roll, Auto-Equip, Need on non-gear loot or the
+-- auto-confirm prompts (review R3-3). Profile switches carry looks and scoring only.
+local PERSONAL={autoEquip=true,autoQuest=true,autoRoll=true,confirmEquipBinds=true,confirmLootRolls=true,
+    rollNonGear=true,rollNonGearMaxQuality=true,equipBoE=true,equipBoEMaxQuality=true,autoEquipMaxQuality=true}
+ns.PERSONAL_SETTINGS=PERSONAL
 function ns.ApplyProfile(payload)
     local value,why=ns.ValidateProfile(payload);if not value then S.Note('profile',why);return false end
     applying=true
     local c=ns.Char()
     c.spec=value.settings.spec
-    for key,v in pairs(value.settings) do c[key]=v end
+    for key,v in pairs(value.settings) do if not PERSONAL[key] then c[key]=v end end
     if value.rules then for _,key in ipairs({'locked','ignore','ignoreLinks'}) do c[key]=value.rules[key] or {} end end
     if value.weights then ns.Account().weights=value.weights end
     if value.imported then ns.Account().imported=value.imported end

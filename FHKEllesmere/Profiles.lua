@@ -21,7 +21,9 @@ for _, key in ipairs({
     'petHappinessColors', 'petMoodIcon', 'petMoodStyle', 'petMoodStrip', 'petMoodHideHappy', 'resourceBarZones', 'alignPowerText', 'statusIconBadge', 'darkHealthLine', 'fleeTick', 'aggroPlates', 'petAggroPlates', 'combatFadeGuides', 'totOnYou', 'extraCombatIcons', 'petCombatIcon', 'petCombatSize', 'petCombatX', 'petCombatY', 'combatBlockSize', 'combatIconStyle', 'lootInHealthText',
     'vividCueText', 'vividBarFills', 'pixelIconEdges', 'pixelBarSeparators',
     -- warnings, XP, press feedback, swing cursor
-    'warnings', 'xpBar', 'actionPress', 'swingCursor', 'reduceMotion', 'chromeVisibility', 'chatQuiet', 'keyboardKeyLabels', 'autoGearMode', 'aspectAdvisor', 'petElements', 'petFood', 'hunterCues', 'levelingQoL', 'hunterColors', 'cdmLabels',
+    'warnings', 'xpBar', 'actionPress', 'swingCursor', 'reduceMotion', 'chromeVisibility', 'chatQuiet', 'keyboardKeyLabels', 'autoGearMode', 'aspectAdvisor', 'summonBar', 'petElements', 'petFood', 'hunterCues', 'levelingQoL', 'autoTrain', 'hunterColors', 'cdmLabels',
+    -- class kits (2026-10-06); weaponEnchantsLearned and classStockSoulstone stay per character
+    'classBuffs', 'weaponEnchants', 'classStock', 'behindIndicator', 'classCues', 'energyTick', 'totOnPet', 'rankNotifier', 'ammoBuy', 'restock', 'vendorRestock', 'ufTextVariants',
     -- centre HUD position
     'point', 'relPoint', 'x', 'y', 'fhkGearSettings',
 }) do PROFILE_KEYS[key] = true end
@@ -62,6 +64,7 @@ local function Store()
     local store = profile[STORE_KEY]
     if type(store) ~= 'table' then
         store = Copy(lastStore or fallback or {})
+        store._storeId = nil -- a new profile is a new store (suite review SC-1)
         profile[STORE_KEY] = store
     end
     lastStore = store
@@ -97,25 +100,35 @@ local function Attach(db)
     if moved then db.profileMigrated = 1 end
     setmetatable(db, proxy)
     loadedName = select(2, ActiveProfile())
+    -- At login, before any feature syncs: drop snapshots left by a replaced store (SC-1).
+    if NS.ValidateEllesmereSnapshots then pcall(NS.ValidateEllesmereSnapshots) end
 end
 NS.AttachEllesmereProfile = Attach
 
 -- Re-sync live features after the active profile changes.
 local function Resync()
-    for _, name in ipairs({'SyncEllesmereAspects', 'SyncEllesmerePetElements', 'SyncEllesmerePetFood', 'SyncEllesmereHunterCues', 'SyncEllesmereLeveling', 'ApplyEllesmereHunterColours', 'SyncEllesmereCdmLabels', 'SyncEllesmereWarnings', 'SyncEllesmerePressFeedback', 'SyncEllesmereCueFades', 'SyncEllesmereNameplateOpacity',
+    if NS.ValidateEllesmereSnapshots then pcall(NS.ValidateEllesmereSnapshots) end
+    for _, name in ipairs({'SyncEllesmereAspects', 'SyncEllesmereSummons', 'SyncEllesmerePetElements', 'SyncEllesmerePetFood', 'SyncEllesmereHunterCues', 'SyncEllesmereLeveling', 'SyncEllesmereAutoTrain', 'SyncEllesmereClassBuffs', 'SyncEllesmereWeaponEnchants', 'SyncEllesmereClassStock', 'SyncEllesmereClassCues', 'SyncEllesmereRankNotifier', 'SyncEllesmereAmmoBuy', 'SyncEllesmereRestock', 'ApplyEllesmereHunterColours', 'SyncEllesmereCdmLabels', 'SyncEllesmereWarnings', 'SyncEllesmerePressFeedback', 'SyncEllesmereCueFades', 'SyncEllesmereNameplateOpacity',
         'SyncEllesmereXPBar', 'SyncEllesmereChromeVisibility', 'ApplyEllesmereIndicators', 'RefreshEllesmereRarity',
         'SyncEllesmereUnitRefinements', 'SyncEllesmereReviewedProfile', 'SyncEllesmereVividTheme', 'SyncEllesmereCueText',
-        'ApplySwingCursor', 'ApplyEllesmereChatQuiet', 'PaintEllesmereResourceBars', 'SyncEllesmereAutoGearMode', 'SyncEllesmereClassHUD', 'SyncEllesmereGearProfile'}) do
+        'ApplySwingCursor', 'ApplyEllesmereChatQuiet', 'PaintEllesmereResourceBars', 'SyncEllesmereAutoGearMode', 'SyncEllesmereClassHUD', 'SyncEllesmereGearProfile', 'AnchorEllesmereHUD'}) do
         if type(NS[name]) == 'function' then pcall(NS[name]) end
     end
     if EUI.RefreshPage then pcall(EUI.RefreshPage, EUI) end
 end
 NS.SyncEllesmereProfileFeatures = Resync
+-- A switch in combat (Ellesmere's profile keybind works in combat): settings follow at once,
+-- the ~35 feature syncs (some touch secure buttons) wait for combat to end (suite review SC-7).
+local resyncAfterCombat = false
 local function CheckSwitch()
     local name = select(2, ActiveProfile())
     if loadedName and name ~= loadedName then
         loadedName = name
-        Store(); Resync()
+        Store()
+        local ok, combat = pcall(InCombatLockdown)
+        if ok and combat == true and NS.EllesmereProfileDriver then
+            resyncAfterCombat = true; NS.EllesmereProfileDriver:RegisterEvent('PLAYER_REGEN_ENABLED')
+        else Resync() end
     end
 end
 NS.CheckEllesmereProfileSwitch = CheckSwitch
@@ -143,12 +156,13 @@ local RESET_KEYS = {
         'nonTargetRange', 'lootCues', 'skinCues', 'cueFades', 'cueOutAlpha', 'nameplateOpacity', 'rarityMarkers', 'rarityLevelColours',
         'rarityIcons', 'rarityMarkerStyle', 'rarityIconSize', 'rarityIconPosition', 'raritySkulls', 'rarityQuestCount',
         'aggroPlates', 'petAggroPlates', {'indicators', 'plate'}, {'damageTrails', 'nameplates'}},
-    EllesmereUIUnitFrames = {'aspectAdvisor', 'petElements', 'petFood', 'healthBarColors', 'healthTextColors', 'resourceTextColors', 'petHappinessColors', 'petMoodIcon', 'petMoodStyle', 'petMoodHideHappy',
+    EllesmereUIUnitFrames = {'ufTextVariants', 'combatFadeGuides', 'extraCombatIcons', 'aspectAdvisor', 'summonBar', 'classBuffs', 'weaponEnchants', 'totOnPet', 'petElements', 'petFood', 'healthBarColors', 'healthTextColors', 'resourceTextColors', 'petHappinessColors', 'petMoodIcon', 'petMoodStyle', 'petMoodHideHappy',
         'petMoodStrip', 'alignPowerText', 'statusIconBadge', 'darkHealthLine', 'fleeTick', 'totOnYou', 'petCombatIcon', 'combatIconStyle', 'petCombatSize', 'petCombatX', 'petCombatY', 'combatBlockSize', 'lootInHealthText', {'indicators', 'frame'}, {'damageTrails', 'unitframes'}},
-    EllesmereUIResourceBars = {'resourceBarZones', 'resourceBarColors', 'attackPulses', 'attackCueSize',
+    EllesmereUIResourceBars = {'behindIndicator', 'energyTick', 'resourceBarZones', 'resourceBarColors', 'attackPulses', 'attackCueSize',
         {'indicators', 'range'}, {'indicators', 'attacks'}, 'point', 'relPoint', 'x', 'y'},
     EllesmereUIActionBars = {'xpBar', 'actionPress', 'chromeVisibility', 'keyboardKeyLabels'},
-    EllesmereUIQoL = {'warnings', 'swingCursor', 'hunterCues', 'levelingQoL', 'hunterColors'},
+    EllesmereUICooldownManager = {'cdmLabels'},
+    EllesmereUIQoL = {'warnings', 'swingCursor', 'hunterCues', 'levelingQoL', 'autoTrain', 'hunterColors', 'classStock', 'classCues', 'rankNotifier', 'ammoBuy', 'restock', 'vendorRestock'},
 }
 NS.EllesmereResetKeys = RESET_KEYS
 function NS.ResetEllesmereCompanionFor(folder)
@@ -165,7 +179,51 @@ function NS.ResetEllesmereCompanionFor(folder)
 end
 
 -- Per-character tables still keyed by profile name follow rename and delete.
-local NAME_KEYED = {'themePresets', 'classHUD', 'chromeVisibilityBefore'}
+local NAME_KEYED = {'themePresets', 'classHUD', 'chromeVisibilityBefore', 'combatLayout'}
+-- Restore snapshots belong to one profile store, not just a profile name (suite review SC-1):
+-- Ellesmere's Reset ALL, a same-name import or an account import can replace the store behind a
+-- name, and an old snapshot must never write itself into the new profile. Each store carries an
+-- id; a snapshot is stamped with it when written and dropped when the ids no longer match.
+local function NewId() return ('%08x%04x'):format(math.random(0, 0x7fffffff), math.random(0, 0xffff)) end
+local function StoreIdOf(name)
+    local root = _G.EllesmereUIDB
+    local profile = root and type(root.profiles) == 'table' and root.profiles[name]
+    local store = type(profile) == 'table' and profile[STORE_KEY]
+    if type(store) ~= 'table' then return nil end
+    if type(store._storeId) ~= 'string' then store._storeId = NewId() end
+    return store._storeId
+end
+local function Stamps(db)
+    local t = rawget(db, 'snapshotStores')
+    if type(t) ~= 'table' then t = {}; rawset(db, 'snapshotStores', t) end
+    return t
+end
+function NS.EllesmereStampSnapshot(key, name)
+    local db = _G.FHKEllesmereDB
+    if type(db) ~= 'table' or type(name) ~= 'string' then return end
+    local id = StoreIdOf(name)
+    if not id then return end
+    local stamps = Stamps(db)
+    if type(stamps[key]) ~= 'table' then stamps[key] = {} end
+    stamps[key][name] = id
+end
+local function ValidateSnapshots()
+    local db = _G.FHKEllesmereDB
+    if type(db) ~= 'table' then return end
+    local stamps = Stamps(db)
+    for _, key in ipairs(NAME_KEYED) do
+        local t = rawget(db, key)
+        if type(t) == 'table' then
+            if type(stamps[key]) ~= 'table' then stamps[key] = {} end
+            for name in pairs(t) do
+                local id, stamp = StoreIdOf(name), stamps[key][name]
+                if id and stamp and stamp ~= id then t[name] = nil; stamps[key][name] = nil
+                elseif id and not stamp then stamps[key][name] = id end -- snapshots from before 1.9.5
+            end
+        end
+    end
+end
+NS.ValidateEllesmereSnapshots = ValidateSnapshots
 local function Renamed(oldName, newName)
     local db = _G.FHKEllesmereDB
     if type(db) ~= 'table' or oldName == nil or newName == nil then return end
@@ -173,6 +231,8 @@ local function Renamed(oldName, newName)
     for _, key in ipairs(NAME_KEYED) do
         local t = rawget(db, key)
         if type(t) == 'table' and t[oldName] ~= nil then t[newName] = t[oldName]; t[oldName] = nil end
+        local s = Stamps(db)[key]
+        if type(s) == 'table' and s[oldName] ~= nil then s[newName] = s[oldName]; s[oldName] = nil end
     end
     if loadedName == oldName then loadedName = newName end
 end
@@ -183,6 +243,8 @@ local function Deleted(name)
     for _, key in ipairs(NAME_KEYED) do
         local t = rawget(db, key)
         if type(t) == 'table' then t[name] = nil end
+        local s = Stamps(db)[key]
+        if type(s) == 'table' then s[name] = nil end
     end
 end
 NS.EllesmereProfileRenamed, NS.EllesmereProfileDeleted = Renamed, Deleted
@@ -200,9 +262,13 @@ local function Hook()
 end
 
 local driver = CreateFrame('Frame')
+NS.EllesmereProfileDriver = driver
 driver:RegisterEvent('ADDON_LOADED'); driver:RegisterEvent('PLAYER_LOGIN'); driver:RegisterEvent('PLAYER_LOGOUT')
 driver:SetScript('OnEvent', function(_, event, name)
-    if event == 'ADDON_LOADED' then
+    if event == 'PLAYER_REGEN_ENABLED' then
+        driver:UnregisterEvent('PLAYER_REGEN_ENABLED')
+        if resyncAfterCombat then resyncAfterCombat = false; Resync() end
+    elseif event == 'ADDON_LOADED' then
         if name ~= addon then return end
         if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
         Attach(FHKEllesmereDB); Hook()

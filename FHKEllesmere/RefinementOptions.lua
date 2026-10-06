@@ -45,8 +45,17 @@ local function Live(cfg)
     local fn=key and cfg[key]
     if type(fn)~='function' then return cfg end
     cfg[key]=function(...)
+        -- A button that navigated away has nothing to refresh (review P7): refreshing the new
+        -- page would rebuild it a second time.
+        local function Where()
+            local m=type(EUI.GetActiveModule)=='function' and EUI:GetActiveModule()
+            local p=type(EUI.GetActivePage)=='function' and EUI:GetActivePage()
+            return m,p
+        end
+        local m,p=Where()
         local a,b=fn(...)
-        if EUI.RefreshPage then pcall(EUI.RefreshPage,EUI) end
+        local m2,p2=Where()
+        if EUI.RefreshPage and m==m2 and p==p2 then pcall(EUI.RefreshPage,EUI) end
         return a,b
     end
     cfg.fhkLive=true
@@ -108,8 +117,9 @@ local function Eye(region,cfg)
     if EUI.RegisterWidgetRefresh then EUI.RegisterWidgetRefresh(Refresh) end
     return btn
 end
+local OPEN_ICON='Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-open.png'
 local function Extras(row,side,cfg)
-    if type(cfg)~='table' or not (cfg.swatches or cfg.move or cfg.cog or cfg.preview) then return end
+    if type(cfg)~='table' or not (cfg.swatches or cfg.move or cfg.cog or cfg.preview or cfg.link) then return end
     if EUI._prebuilding or type(row)~='table' then return end
     local region=row[side]
     if type(region)~='table' then return end
@@ -129,6 +139,11 @@ local function Extras(row,side,cfg)
         end
     end
     if type(cfg.preview)=='table' then pcall(Eye,region,cfg) end
+    -- Hunter hub rows: the open icon goes to the section where the feature lives.
+    if type(cfg.link)=='table' and EUI.BuildInlineCog then
+        pcall(EUI.BuildInlineCog,region,{icon=OPEN_ICON,gap=9,tip='Open '..tostring(cfg.link.section or cfg.link.page),
+            show=function() if NS.OpenEllesmereCompanionSection then NS.OpenEllesmereCompanionSection(cfg.link) end end})
+    end
 end
 NS.EllesmereRowExtras=Extras
 local function RenderSection(W, header, parent, v, y)
@@ -161,12 +176,46 @@ end
 -- RegisterPlugin instead: there the companion gets its own sidebar section,
 -- one page per suite module it refines. 9.3.4 keeps the in-page sections.
 local PLUGIN_ID='FHKForever'
-local PLUGIN_PAGES={'General','Action Bars','Unit Frames','Nameplates','Resource Bars','Warnings'}
+local PLUGIN_PAGES={'Class','General','Action Bars','Unit Frames','Nameplates','Resource Bars','Warnings'}
 local PLUGIN_PAGE_FOR={EllesmereUIActionBars='Action Bars',EllesmereUIUnitFrames='Unit Frames',
     EllesmereUINameplates='Nameplates',EllesmereUIResourceBars='Resource Bars',EllesmereUIQoL='Warnings'}
 local pluginSections,pluginRegistered={},false
 local function PluginMode() return type(EUI.RegisterPlugin)=='function' end
 NS.EllesmereOptionsPluginMode=PluginMode
+-- Options follow the logged-in character's class (player, 2026-10-06: "hide irrelevant
+-- options from their class"). A class never changes in a session, so the gate is read
+-- when sections register. Sections not listed show for every class.
+local function PlayerClass() local ok,_,class=pcall(UnitClass,'player');return ok and class or nil end
+NS.EllesmerePlayerClass=PlayerClass
+local PET_CLASSES={HUNTER=true,WARLOCK=true}
+local SECTION_CLASSES={
+    ['ASPECTS']={HUNTER=true},['PET FOOD']={HUNTER=true},['HUNTER CUES']=PET_CLASSES,
+    ['HUNTER RANGE AND CORPSES']={HUNTER=true},['HUNTER TIMING COMPATIBILITY']={HUNTER=true},
+    ['AUTO ATTACK INDICATORS']={HUNTER=true},['REVIEWED HUNTER CUES']={HUNTER=true},
+    ['PET AURAS AND TARGET']=PET_CLASSES,['PETS AND SUMMONS']=PET_CLASSES,['PET CUES']=PET_CLASSES,
+    -- class kits: each section only where its class has the feature
+    ['CLASS BUFFS']={PALADIN=true,PRIEST=true,MAGE=true,WARLOCK=true,SHAMAN=true,DRUID=true,WARRIOR=true},
+    ['CLASS SUPPLIES']={WARLOCK=true,SHAMAN=true,ROGUE=true,MAGE=true,PALADIN=true,PRIEST=true,DRUID=true},
+    ['BEHIND INDICATOR']={ROGUE=true,DRUID=true},['ENERGY TICK']={ROGUE=true,DRUID=true},
+    ['CLASS CUES']={ROGUE=true,DRUID=true,WARRIOR=true},
+}
+local function SectionAllowed(title)
+    local set=SECTION_CLASSES[title]
+    if not set then return true end
+    local class=PlayerClass()
+    -- An unreadable class keeps every section, so nothing is lost on a client fault.
+    return class==nil or set[class]==true
+end
+NS.EllesmereSectionAllowed=SectionAllowed
+-- Shared sections named for the hunter keep a class-neutral title on other classes.
+-- Warlocks keep the pet cues (player, 2026-10-06: "warlocks have pets so some options are applicable").
+local NEUTRAL_TITLES={['HUNTER WARNINGS']='WARNINGS',['HUNTER COLORS']='CUE COLORS',['HUNTER CUES']='PET CUES'}
+local function ClassTitle(title)
+    local class=PlayerClass()
+    if class==nil or class=='HUNTER' then return title end
+    return NEUTRAL_TITLES[title] or title
+end
+NS.EllesmereClassSectionTitle=ClassTitle
 local function QueuePluginSection(module,title,builder)
     local page=PLUGIN_PAGE_FOR[module] or 'General'
     local list=pluginSections[page] or {};pluginSections[page]=list
@@ -181,10 +230,228 @@ local function BuildPluginPage(page,parent,offset)
     return math.abs(y)
 end
 NS.BuildEllesmerePluginPage=BuildPluginPage
+-- Hunter hub (player, 2026-10-06: "hunter specifics should be under a hunter tab"; chosen: a
+-- hub with each feature's toggle and a link to its full settings, which stay where the
+-- element lives). Rows are the features' own option rows, read from their sections when
+-- the page builds, so the hub stores nothing and always matches the full sections.
+local HUNTER_HUB={
+    {'RANGE AND DEAD ZONE',{
+        {'Resource Bars','RANGE INDICATOR','Range Indicator'},{'Resource Bars','RANGE INDICATOR','Range Bracket Preset'},
+        {'Nameplates','HUNTER RANGE AND CORPSES','Range Cue Preset'},{'Unit Frames','RANGE BAR','Unit Frame Range Bar'},
+        {'Resource Bars','RANGE INDICATOR','Facing Failure Cue'},{'Resource Bars','RANGE INDICATOR','Line Of Sight / Movement Failure Cue'},
+        {'Warnings','LEVELING HELPERS','Target Range Fade'}}},
+    {'SHOOTING AND WEAVING',{
+        {'Resource Bars','AUTO ATTACK INDICATORS','Auto Attack Indicators'},{'Warnings','HUNTER CUES','Mongoose Bite / Counterattack Glow'},
+        {'Warnings','HUNTER CUES','Rapid Killing Proc'},{'Warnings','HUNTER CUES','Stop Attack On Your Crowd Control'},
+        {'Warnings','HUNTER CUES','Not Shooting'}}},
+    {'ASPECTS',{
+        {'Unit Frames','ASPECTS','Aspect Element'},{'Unit Frames','ASPECTS','Aspect Visibility'},
+        {'Unit Frames','ASPECTS','Travel Advice'},{'Warnings','HUNTER WARNINGS','Cheetah / Pack Combat Warning'}}},
+    {'PET: HEALTH AND STATE',{
+        {'Warnings','HUNTER WARNINGS','Missing / Dead Pet In Combat'},{'Warnings','HUNTER WARNINGS','Mend Pet Reminder'},
+        {'Warnings','HUNTER WARNINGS','Pet Too Far To Mend'},{'Warnings','HUNTER CUES','Pet Idle'},
+        {'Unit Frames','PET AURAS AND TARGET','Pet Auras'},{'Unit Frames','PET AURAS AND TARGET','Pet Target'},
+        {'Unit Frames','COLOUR AND TEXT REFINEMENTS','Pet Combat Icon'},{'Warnings','HUNTER CUES','Growl Reminder'},
+        {'Unit Frames','PETS AND SUMMONS','Pets And Summons Bar'},{'Unit Frames','PETS AND SUMMONS','Summon Hawk Button'},
+        {'Warnings','HUNTER WARNINGS','Pet On Passive Warning'},{'Warnings','HUNTER WARNINGS','Pet Level Warning'}}},
+    {'PET: HAPPINESS, FOOD AND GROWTH',{
+        {'Unit Frames','COLOUR AND TEXT REFINEMENTS','Pet Happiness Icon'},{'Warnings','HUNTER WARNINGS','Feed Pet Reminder'},
+        {'Unit Frames','PET FOOD','Feeding View'},{'Warnings','HUNTER WARNINGS','Pet Food Warning'},
+        {'Unit Frames','PET FOOD','Pet Food Button'},
+        {'Unit Frames','PET AURAS AND TARGET','Pet XP Bar'}}},
+    {'COMBAT CUES',{
+        {'Warnings','HUNTER CUES','Feign Death Warnings'},{'Warnings','HUNTER CUES','Trap Broken'},
+        {'Warnings','HUNTER WARNINGS','Frenzy: Tranquilizing Shot'},{'Warnings','HUNTER CUES',"Hunter's Mark On Elites"},
+        {'Warnings','HUNTER CUES','Trueshot Aura Missing'},{'Unit Frames','COLOUR AND TEXT REFINEMENTS','Gold Target of Target on You'},
+        {'Unit Frames','COLOUR AND TEXT REFINEMENTS','Flee Mark'}}},
+    {'AMMO, TRACKING AND LEVELING',{
+        {'Warnings','HUNTER WARNINGS','Low Ammo Warning'},
+        {'Warnings','HUNTER CUES','Tracking Reminder'},{'Warnings','LEVELING HELPERS','Gathering Tracking Reminder'},
+        {'Warnings','HUNTER CUES','Beast Tooltip'},{'Warnings','LEVELING HELPERS','Loot Left Behind'},
+        {'Warnings','LEVELING HELPERS','Zone Levels On Map'}}},
+}
+-- Every class page ends with the shared restock, training and alert rows. A 4th field marks a
+-- row only some classes have (drink, reagents, ammo, pet food): it is skipped quietly elsewhere.
+local SHARED_HUB={
+    {'VENDOR RESTOCK',{
+        {'Warnings','VENDOR RESTOCK','Auto-Buy Food'},{'Warnings','VENDOR RESTOCK','Auto-Buy Drink',true},
+        {'Warnings','VENDOR RESTOCK','Auto-Buy Class Reagents',true},{'Warnings','VENDOR RESTOCK','Auto-Buy Ammo',true},
+        {'Warnings','VENDOR RESTOCK','Auto-Buy Pet Food',true},{'Warnings','VENDOR RESTOCK','Max Spend Per Visit'}}},
+    {'TRAINING AND TALENTS',{
+        {'Warnings','TRAINING','Auto Train'},{'Warnings','TRAINING','Open Trainer From Conversation'},
+        {'Warnings','TRAINING','Talent Planner'},{'Warnings','TRAINING','Learn Planned Talents'},
+        {'Warnings','HUNTER WARNINGS','Unspent Talent Warning'},{'Warnings','NEW SPELLS','New Spell Alerts'},
+        {'Warnings','NEW SPELLS','List New Spells In Chat'}}},
+    {'ALERTS',{
+        {'Warnings','HUNTER WARNINGS','Top Alert Lane'},{'Warnings','HUNTER WARNINGS','Combat Warnings Above Character'},
+        {'Warnings','HUNTER WARNINGS','Hide Spam Errors'},{'Warnings','HUNTER WARNINGS','Hide Errors A Warning Shows'},
+        {'Warnings','HUNTER WARNINGS','Warning Text Style'}}},
+}
+-- Class hub page (player, 2026-10-06: class kits for every class). The page is named after
+-- the player's class; each class lists its own groups, then the shared ones. Rows a build
+-- does not offer (another class, an older core) are skipped when the page builds.
+local CB,WE,CS,CC={'Unit Frames','CLASS BUFFS'},{'Unit Frames','WEAPON ENCHANTS'},{'Warnings','CLASS SUPPLIES'},{'Warnings','CLASS CUES'}
+local BI,ET={'Resource Bars','BEHIND INDICATOR'},{'Resource Bars','ENERGY TICK'}
+local function R(at,label) return {at[1],at[2],label} end
+local BUFF_ROWS={R(CB,'Class Buff Bar'),R(CB,'Class Buff Bar Visibility'),R(CB,'Missing / Expiring Cues'),R(CB,'Cue Sound')}
+local SUPPLY_ROWS={R(CS,'Class Supplies'),R(CS,'Supplies Visibility'),R(CS,'Supply Warnings'),R(CS,'Supply Warning Sound')}
+local CLASS_HUB={HUNTER={title='HUNTER',page='Hunter',groups=HUNTER_HUB},
+    WARRIOR={groups={{'SHOUT AND WEAPON',{R(CB,'Class Buff Bar'),R(CB,'Missing / Expiring Cues'),R(WE,'Weapon Enchants'),R(WE,'Weapon Enchant Visibility')}},
+        {'STANCES AND REACTIONS',{R(CC,'Wrong Stance Cue'),R(CC,'Reactive Ability Glow'),R(CC,'Stance Mismatch Hint')}}}},
+    PALADIN={groups={{'AURAS, SEALS AND BLESSINGS',{R(CB,'Class Buff Bar'),R(CB,'Class Buff Bar Visibility'),R(CB,'Missing / Expiring Cues'),
+        R(CB,'Preferred Blessing'),R(CB,'Righteous Fury Cue'),R(CB,'Seals Cue')}},{'SYMBOLS AND WEAPON',{R(CS,'Class Supplies'),R(CS,'Supply Warnings'),R(WE,'Weapon Enchants')}}}},
+    ROGUE={groups={{'POISONS',{R(WE,'Weapon Enchants'),R(WE,'Weapon Enchant Visibility'),R(WE,'Main Hand Poison'),R(WE,'Off Hand Poison'),
+        R(WE,'Missing Enchant Cue'),R(WE,'Expiring Cue')}},
+        {'POSITION AND OPENERS',{R(BI,'Behind Indicator'),R(CC,'Stealth First Cue'),R(CC,'Must Be Behind Cue'),R(CC,'Stealth Opener Cue')}},
+        {'COMBAT',{R(CC,'Riposte Glow'),R(CC,'Slice And Dice Cue'),R(ET,'Energy Tick Spark')}},{'SUPPLIES',SUPPLY_ROWS}}},
+    PRIEST={groups={{'BUFFS',BUFF_ROWS},{'CANDLES AND FEATHERS',SUPPLY_ROWS},{'WAND AND WEAPON',{R(WE,'Weapon Enchants')}}}},
+    MAGE={groups={{'ARMOR AND INTELLECT',BUFF_ROWS},{'CONJURES AND RUNES',SUPPLY_ROWS}}},
+    WARLOCK={groups={{'DEMONS',{{'Unit Frames','PETS AND SUMMONS','Pets And Summons Bar'},{'Unit Frames','PET AURAS AND TARGET','Pet Auras'},
+        {'Unit Frames','PET AURAS AND TARGET','Pet Target'},{'Unit Frames','COLOUR AND TEXT REFINEMENTS','Pet Combat Icon'},
+        {'Warnings','HUNTER WARNINGS','Missing / Dead Pet In Combat'},{'Warnings','HUNTER WARNINGS','Pet On Passive Warning'},
+        {'Warnings','HUNTER WARNINGS','Health Funnel Reminder'},{'Warnings','HUNTER CUES','Pet Idle'}}},
+        {'ARMOR',BUFF_ROWS},{'SHARDS AND STONES',{R(CS,'Class Supplies'),R(CS,'Supplies Visibility'),R(CS,'Soulstone Timer'),R(CS,'Soul Bag Full Warning'),R(WE,'Weapon Enchants')}}}},
+    SHAMAN={groups={{'SHIELDS AND IMBUES',{R(CB,'Class Buff Bar'),R(CB,'Missing / Expiring Cues'),R(WE,'Weapon Enchants'),R(WE,'Preferred Imbue'),R(WE,'Missing Enchant Cue')}},
+        {'ANKH AND REAGENTS',SUPPLY_ROWS}}},
+    DRUID={groups={{'BUFFS (CASTER FORM)',BUFF_ROWS},
+        {'CAT FORM',{R(BI,'Behind Indicator'),R(ET,'Energy Tick Spark'),R(CC,'Prowl First Cue'),R(CC,'Prowl Opener Cue'),R(CC,'Must Be Behind Cue'),R(CC,'Leave Form Cue')}},
+        {'SEEDS AND HERBS',SUPPLY_ROWS}}},
+}
+local function HubGroups(hub)
+    local groups={}
+    for _,g in ipairs(hub.groups or {}) do groups[#groups+1]=g end
+    for _,g in ipairs(SHARED_HUB) do groups[#groups+1]=g end
+    return groups
+end
+-- The set "Turn On Recommended" switches on: companion keys only, each the hub row's own toggle.
+local RECOMMENDED={['Mend Pet Reminder']=true,['Missing / Dead Pet In Combat']=true,['Feed Pet Reminder']=true,
+    ['Pet Food Warning']=true,['Cheetah / Pack Combat Warning']=true,['Stop Attack On Your Crowd Control']=true,
+    ['Feign Death Warnings']=true,['Trap Broken']=true,['Pet Idle']=true,['Growl Reminder']=true,['Aspect Element']=true,
+    ['Pet Auras']=true,['Pet Target']=true,['Pet XP Bar']=true,['Pet Happiness Icon']=true,['Top Alert Lane']=true,
+    ['Combat Warnings Above Character']=true,['Hide Spam Errors']=true,['Low Ammo Warning']=true,['Unspent Talent Warning']=true,
+    ['Range Indicator']=true,['Auto Attack Indicators']=true,['Facing Failure Cue']=true}
+-- One section's rows, by label, from its own builder. Builders only describe rows here.
+local function Harvest(page,section)
+    local out={}
+    for _,v in ipairs(pluginSections[page] or {}) do
+        if v.title==section then
+            pcall(v.builder,function(left,right)
+                if type(left)=='table' and left.text then out[left.text]=left end
+                if type(right)=='table' and right.text then out[right.text]=right end
+            end)
+        end
+    end
+    return out
+end
+-- Hub labels a page build could not find (a renamed row): read by the standalone test.
+local hubMissing={}
+function NS.EllesmereHubMissing() return hubMissing end
+local function HubRows(items)
+    local cache,rows={}, {}
+    for _,item in ipairs(items) do
+        local page,section,label=item[1],ClassTitle(item[2]),item[3]
+        local key=page..'|'..section
+        cache[key]=cache[key] or Harvest(page,section)
+        local cfg=cache[key][label]
+        if cfg then
+            local copy={}
+            for k,v in pairs(cfg) do copy[k]=v end
+            copy.link={page=page,section=section,row=label}
+            rows[#rows+1]=copy
+        elseif not item[4] and pluginSections[page] and SectionAllowed(item[2]) then
+            -- Only a section that exists here can be missing a row (other classes skip theirs).
+            for _,v in ipairs(pluginSections[page]) do if v.title==section then hubMissing[page..' > '..section..' > '..label]=true end end
+        end
+    end
+    return rows
+end
+-- Turn On remembers each row's previous value (per character); Undo puts exactly those back, so a
+-- shared feature that was already on (Low Ammo, the alert lane) is never forced off (review R3-1).
+local function SetRecommended(on)
+    if type(FHKEllesmereDB)~='table' then return end
+    local before=FHKEllesmereDB.hunterSetBefore
+    if not on and type(before)~='table' then
+        print('FHK: nothing to undo: Turn On Recommended Hunter Set has not been used on this character.')
+        return
+    end
+    local saved=on and (type(before)=='table' and before or {}) or nil
+    for _,group in ipairs(HubGroups(CLASS_HUB.HUNTER)) do
+        for _,cfg in ipairs(HubRows(group[2])) do
+            if RECOMMENDED[cfg.text] and cfg.type=='toggle' and type(cfg.getValue)=='function' and type(cfg.setValue)=='function' then
+                local ok,current=pcall(cfg.getValue)
+                if ok then
+                    current=current and true or false
+                    if on then
+                        if saved[cfg.text]==nil then saved[cfg.text]=current end
+                        if not current then pcall(cfg.setValue,true) end
+                    elseif type(before[cfg.text])=='boolean' and before[cfg.text]~=current then pcall(cfg.setValue,before[cfg.text]) end
+                end
+            end
+        end
+    end
+    FHKEllesmereDB.hunterSetBefore=saved
+    if EUI.RefreshPage then pcall(EUI.RefreshPage,EUI) end
+    print(on and 'FHK: Recommended Hunter set turned on. Undo puts each setting back as it was.' or 'FHK: Recommended Hunter set undone: each setting is back as it was.')
+end
+NS.SetEllesmereRecommendedHunterSet=SetRecommended
+function NS.OpenEllesmereCompanionSection(link)
+    if type(link)~='table' then return end
+    local key=EUI.GetPluginModuleKey and EUI.GetPluginModuleKey(PLUGIN_ID,'companion')
+    if key and EUI.NavigateToElementSettings then
+        EUI:NavigateToElementSettings(key,link.page,link.section,nil,link.row)
+    elseif EUI.OpenPlugin then EUI.OpenPlugin(PLUGIN_ID,'companion',link.page) end
+end
+local function ClassHubSections(hub)
+    local list={}
+    for _,group in ipairs(HubGroups(hub)) do
+        list[#list+1]={title=group[1],builder=function(Row)
+            local rows=HubRows(group[2])
+            if #rows==0 then Row({type='label',text='Nothing here on this build'},EUI.BlankRowCfg and EUI.BlankRowCfg() or {type='label',text=''}) end
+            for i=1,#rows,2 do Row(rows[i],rows[i+1] or (EUI.BlankRowCfg and EUI.BlankRowCfg() or {type='label',text=''})) end
+        end}
+    end
+    return list
+end
+local function HubSections()
+    local list={{title='HUNTER',builder=function(Row)
+        Row({type='button',text='Turn On Recommended Hunter Set',
+            tooltip='Turns on the pet, aspect, range and combat warnings most hunters want. Only companion settings change; two of them (Hide Spam Errors, Hide Errors A Warning Shows) filter the game\'s red error text.',
+            onClick=function() SetRecommended(true) end},
+            {type='button',text='Undo Recommended Hunter Set',tooltip='Puts each of those settings back to how it was before Turn On. Settings you changed since stay as you set them only if Turn On had not touched them.',
+            disabled=function() return type(FHKEllesmereDB)~='table' or type(FHKEllesmereDB.hunterSetBefore)~='table' end,disabledTooltip='Turn On Recommended Hunter Set',
+            onClick=function() SetRecommended(false) end})
+        Row({type='label',text='Each row is the feature itself; the open icon goes to all of its settings'},EUI.BlankRowCfg and EUI.BlankRowCfg() or {type='label',text=''})
+    end}}
+    for _,group in ipairs(HubGroups(CLASS_HUB.HUNTER)) do
+        list[#list+1]={title=group[1],builder=function(Row)
+            local rows=HubRows(group[2])
+            for i=1,#rows,2 do Row(rows[i],rows[i+1] or (EUI.BlankRowCfg and EUI.BlankRowCfg() or {type='label',text=''})) end
+        end}
+    end
+    return list
+end
+local CLASS_PAGE_NAMES={WARRIOR='Warrior',PALADIN='Paladin',HUNTER='Hunter',ROGUE='Rogue',PRIEST='Priest',
+    SHAMAN='Shaman',MAGE='Mage',WARLOCK='Warlock',DRUID='Druid'}
+-- The class page: the hunter keeps its recommended-set header; every class gets its groups
+-- and the shared ones. Returns the page name, or nil for an unreadable class.
+local function ClassPage()
+    local class=PlayerClass()
+    local name=class and CLASS_PAGE_NAMES[class]
+    if not name then return nil end
+    if not pluginSections[name] then
+        pluginSections[name]=class=='HUNTER' and HubSections() or ClassHubSections(CLASS_HUB[class] or {})
+    end
+    return name
+end
+NS.EllesmereClassHubPage=function() return PlayerClass() and CLASS_PAGE_NAMES[PlayerClass()] end
 local function RegisterPluginPages()
     if pluginRegistered or not PluginMode() or not next(pluginSections) then return end
+    local classPage=ClassPage()
     local pages={}
-    for _,page in ipairs(PLUGIN_PAGES) do if pluginSections[page] then pages[#pages+1]=page end end
+    for _,page in ipairs(PLUGIN_PAGES) do
+        if page=='Class' then page=classPage end
+        if page and pluginSections[page] then pages[#pages+1]=page end
+    end
     local ok,registered=pcall(EUI.RegisterPlugin,PLUGIN_ID,{label='Forever Companion',position='bottom',modules={{
         key='companion',title='Forever Companion',
         description='Range, colors, warnings, history and Hunter refinements for the Ellesmere suite.',
@@ -280,6 +547,7 @@ end
 NS.RegisterEllesmereNativeOptions=RegisterNative
 
 local function Append(module, title, builder, pageName, afterSection)
+    if not SectionAllowed(title) then return end
     if PluginMode() then
         if not (themesNative and title=='FOREVER THEME PRESETS') then QueuePluginSection(module,title,builder) end
         return
@@ -429,9 +697,16 @@ local function Install()
     Append('EllesmereUIResourceBars','FOREVER CLASS HUD',function(Row)
         if NS.AddEllesmereClassHUDOptions then NS.AddEllesmereClassHUDOptions(Row) end
         -- Class setup by goal (audit F24): each button opens the existing tool for it.
+        -- A module that is not loaded would open an empty page (suite review SC-4): grey the button.
         local function Go(text,module,page)
-            return {type='button',text=text,onClick=function()
-                if EUI.NavigateToElementSettings then EUI:NavigateToElementSettings(module,page) end end}
+            local function Missing()
+                local A=C_AddOns
+                if not (A and type(A.IsAddOnLoaded)=='function') then return false end
+                local ok,loaded=pcall(A.IsAddOnLoaded,module)
+                return ok and loaded==false
+            end
+            return {type='button',text=text,disabled=Missing,disabledTooltip=module:gsub('^EllesmereUI','EllesmereUI '),onClick=function()
+                if not Missing() and EUI.NavigateToElementSettings then EUI:NavigateToElementSettings(module,page) end end}
         end
         Row(Go('Track Cooldowns And Procs','EllesmereUICooldownManager','CDM Bars'),
             Go('Track Buff Durations','EllesmereUICooldownManager','Tracking Bars'))
@@ -502,6 +777,18 @@ local function Install()
     Append('EllesmereUIUnitFrames','ASPECTS',function(Row)
         if NS.AddEllesmereAspectOptions then NS.AddEllesmereAspectOptions(Row) end
     end)
+    Append('EllesmereUIUnitFrames','PETS AND SUMMONS',function(Row)
+        if NS.AddEllesmereSummonOptions then NS.AddEllesmereSummonOptions(Row) end
+    end)
+    Append('EllesmereUIUnitFrames','RESOURCE TEXT PAIRS',function(Row)
+        if NS.AddEllesmereUnitTextVariantRows then NS.AddEllesmereUnitTextVariantRows(Row) end
+    end)
+    Append('EllesmereUIUnitFrames','CLASS BUFFS',function(Row)
+        if NS.AddEllesmereClassBuffsOptions then NS.AddEllesmereClassBuffsOptions(Row) end
+    end)
+    Append('EllesmereUIUnitFrames','WEAPON ENCHANTS',function(Row)
+        if NS.AddEllesmereWeaponEnchantsOptions then NS.AddEllesmereWeaponEnchantsOptions(Row) end
+    end)
     Append('EllesmereUIUnitFrames','PET AURAS AND TARGET',function(Row)
         if NS.AddEllesmerePetElementOptions then NS.AddEllesmerePetElementOptions(Row) end
     end)
@@ -512,11 +799,14 @@ local function Install()
         Row(With(Shared(Toggle('Health Bar Colors','healthBarColors'),'Nameplates'),ColorSwatch('healthMid','Health 50% Color'),
             ColorSwatch('healthLow','Health 25% Color'),ColorSwatch('healthCritical','Health Critical Color')),Toggle('Resource Bar Colors','resourceBarColors'))
         Row(Toggle('Health Text Colors','healthTextColors'),Toggle('Resource Text Colors','resourceTextColors'))
+        if PlayerClass()~=nil and PlayerClass()~='HUNTER' then
+            Row(ResetColors({'healthMid','healthLow','healthCritical'},'Reset Health Colors'),{type='label',text=''})
+        else
         Row({type='toggle',text='Pet Happiness Bar Color',tooltip='Off (default): the pet bar shows health like every bar and the happiness icon shows happiness. On: the pet fill uses the happiness color instead.',
             getValue=function() return FHKEllesmereDB.petHappinessColors==true end,
             setValue=function(v) FHKEllesmereDB.petHappinessColors=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
             With({type='toggle',text='Pet Happiness Icon',tooltip='Shows pet happiness as a small block with a black outline: green happy, gold content, red unhappy. Off restores the stock face.',
-            getValue=function() return FHKEllesmereDB.petMoodIcon~=false end,
+            getValue=function() if NS.EllesmereFrameSetting then return NS.EllesmereFrameSetting('petMoodIcon')==true end return FHKEllesmereDB.petMoodIcon~=false end,
             setValue=function(v) FHKEllesmereDB.petMoodIcon=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end},
             ColorSwatch('happy','Happy Color'),ColorSwatch('content','Content Color'),ColorSwatch('unhappy','Unhappy Color')))
         Row(ResetColors({'healthMid','healthLow','healthCritical','happy','content','unhappy'},'Reset Health And Happiness Colors'),
@@ -551,6 +841,7 @@ local function Install()
                 getValue=function() return m.always==true end,setValue=function(v) Set('always',v) end},
                 {type='label',text='Dark / Afterglow: pet fill stays dark; strip shows happiness'})
         end
+        end
         local function PlayerResourceSettings()
             local uf=EUI._ModuleNS and EUI._ModuleNS.EllesmereUIUnitFrames
             local profile=uf and uf.db and uf.db.profile
@@ -564,10 +855,20 @@ local function Install()
             getValue=function()
                 local _,s=PlayerResourceSettings()
                 if not s then return 'none' end
-                return s.powerPercentText == 'none' and 'none' or s.powerTextFormat or 'both'
+                if s.powerPercentText == 'none' then return 'none' end
+                local pairs_=type(FHKEllesmereDB.ufTextVariants)=='table' and FHKEllesmereDB.ufTextVariants.player
+                if type(pairs_)=='table' and pairs_.powerText=='perppnum' then return 'perppnum' end
+                return s.powerTextFormat or 'both'
             end,setValue=function(v)
                 local uf,s=PlayerResourceSettings()
                 if not s then return end
+                -- Ellesmere's own profile keeps only its native keys (suite review SC-2): the companion's
+                -- "% | #" pair is drawn over the native 'both' and saved in the companion store.
+                local variants=type(FHKEllesmereDB.ufTextVariants)=='table' and FHKEllesmereDB.ufTextVariants or {}
+                variants.player=type(variants.player)=='table' and variants.player or {}
+                variants.player.powerText=(v=='perppnum') and 'perppnum' or nil
+                FHKEllesmereDB.ufTextVariants=variants
+                if v=='perppnum' then v='both' end
                 if v == 'none' then s.powerPercentText='none'
                 else
                     if not s.powerPercentText or s.powerPercentText == 'none' then s.powerPercentText='center' end
@@ -593,7 +894,7 @@ local function Install()
                 end})
         Row({type='toggle',text='Status Icons on Frame Edge',
             tooltip='While the Combat Indicator is in its Center position, it and the loot bag sit on the health bar\'s top edge instead of over the name and values. The pet happiness paw, in its Right position, sits on the pet bar\'s top-right corner.',
-            getValue=function() return DB().statusIconBadge~=false end,
+            getValue=function() if NS.EllesmereFrameSetting then return NS.EllesmereFrameSetting('statusIconBadge')==true end return DB().statusIconBadge~=false end,
             setValue=function(v)
                 DB().statusIconBadge=v
                 local uf=EUI._ModuleNS and EUI._ModuleNS.EllesmereUIUnitFrames
@@ -638,19 +939,12 @@ local function Install()
             rows={Num('X Offset','petCombatX',-4,-200,200),Num('Y Offset','petCombatY',0,-200,200)}}
         local style={type='dropdown',text='Combat Icon Style',values={block='White Block',native='Ellesmere Icon'},order={'block','native'},
             tooltip='White Block: a small white square with a black outline on the player and pet frames while in combat. Ellesmere Icon: the style chosen in the Unit Frames combat indicator options, which also move the player icon.',
-            getValue=function() return DB().combatIconStyle=='native' and 'native' or 'block' end,
+            getValue=function() local v=NS.EllesmereFrameSetting and NS.EllesmereFrameSetting('combatIconStyle') or DB().combatIconStyle;return v=='native' and 'native' or 'block' end,
             setValue=function(v) DB().combatIconStyle=v;if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end end}
-        style.cog={title='White Block',disabled=function() return DB().combatIconStyle=='native' end,disabledTooltip='Combat Icon Style: White Block',
+        style.cog={title='White Block',disabled=function() local v=NS.EllesmereFrameSetting and NS.EllesmereFrameSetting('combatIconStyle') or DB().combatIconStyle;return v=='native' end,disabledTooltip='Combat Icon Style: White Block',
             rows={Num('Block Size','combatBlockSize',12,6,24)}}
-        Row(petCombat,style)
-        Row({type='toggle',text='Gold Target of Target on You',
-            tooltip='When your target is attacking you, the target of target bar turns WoW gold, the same act-now color as the gold nameplate edge. On your pet it shows pet green.',
-            getValue=function() return DB().totOnYou~=false end,
-            setValue=function(v)
-                DB().totOnYou=v
-                if NS.SyncEllesmereUnitRefinements then NS.SyncEllesmereUnitRefinements() end
-            end},
-            {type='label',text='Gold: on you; green: on your pet'})
+        if PlayerClass()==nil or PET_CLASSES[PlayerClass()] then Row(petCombat,style) else Row(style,{type='label',text=''}) end
+        if NS.AddEllesmereTargetOfTargetRow then NS.AddEllesmereTargetOfTargetRow(Row) end
         if NS.AddEllesmereDamageTrailOptions then NS.AddEllesmereDamageTrailOptions(Row,'unitframes') end
     end)
     -- The owner's frame and bar arrangement: owner install only (publishing rule).
@@ -694,10 +988,10 @@ local function Install()
             setValue=function(v) if SetCVar then SetCVar('SoftTargetIconGameObject',v and '1' or '0') end end},
             {type='label',text='Shown by the game only while in interact range'})
         Row({type='toggle',text='Soft-Target Sword Icons',
-            tooltip='The crossed-sword icon the game draws over the enemy or friend your soft target picks. Combat Layout turns these off so the player frame keeps the only combat icon.',
+            tooltip='The crossed-sword icon the game draws over the enemy or friend your soft target picks. Turn them off to keep one combat icon, on the player frame.',
             getValue=function() return GetCVarBool and (GetCVarBool('SoftTargetIconEnemy') or GetCVarBool('SoftTargetIconFriend')) or false end,
             setValue=function(v) if SetCVar then SetCVar('SoftTargetIconEnemy',v and '1' or '0');SetCVar('SoftTargetIconFriend',v and '1' or '0') end end},
-            {type='label',text='Game setting; Combat Layout turns it off'})
+            {type='label',text='A game setting, saved with your client'})
         Row({type='toggle',text='Extra Combat Icons',
             tooltip='Also shows the in-combat class icon beside engaged enemy nameplates and above the center HUD. Off keeps one combat icon, on your player frame.',
             getValue=function() return DB().extraCombatIcons==true end,
@@ -778,6 +1072,12 @@ local function Install()
     Append('EllesmereUIResourceBars','RANGE INDICATOR',function(Row)
         if NS.AddEllesmereIndicatorOptions then NS.AddEllesmereIndicatorOptions(Row,'range') end
     end)
+    Append('EllesmereUIResourceBars','BEHIND INDICATOR',function(Row)
+        if NS.AddEllesmereBehindOptions then NS.AddEllesmereBehindOptions(Row) end
+    end)
+    Append('EllesmereUIResourceBars','ENERGY TICK',function(Row)
+        if NS.AddEllesmereEnergyTickOptions then NS.AddEllesmereEnergyTickOptions(Row) end
+    end)
     Append('EllesmereUIResourceBars','AUTO ATTACK INDICATORS',function(Row)
         if NS.AddEllesmereIndicatorOptions then NS.AddEllesmereIndicatorOptions(Row,'attacks') end
     end)
@@ -791,11 +1091,28 @@ local function Install()
             getValue=function() return NS.EllesmereChatQuiet and NS.EllesmereChatQuiet() or false end,
             setValue=function(v) FHKEllesmereDB.chatQuiet=v;if NS.ApplyEllesmereChatQuiet then NS.ApplyEllesmereChatQuiet() end end})
     end)
-    Append('EllesmereUIQoL','HUNTER WARNINGS',function(Row)
+    Append('EllesmereUIQoL',ClassTitle('HUNTER WARNINGS'),function(Row)
         if NS.AddEllesmereWarningOptions then NS.AddEllesmereWarningOptions(Row) end
     end)
-    Append('EllesmereUIQoL','HUNTER CUES',function(Row)
+    Append('EllesmereUIQoL',ClassTitle('HUNTER CUES'),function(Row)
         if NS.AddEllesmereHunterCueOptions then NS.AddEllesmereHunterCueOptions(Row) end
+    end)
+    Append('EllesmereUIQoL','NEW SPELLS',function(Row)
+        if NS.AddEllesmereRankNotifierOptions then NS.AddEllesmereRankNotifierOptions(Row) end
+    end)
+    Append('EllesmereUIQoL','VENDOR RESTOCK',function(Row)
+        if NS.AddEllesmereAmmoBuyOptions and (not NS.EllesmereAmmoBuyAvailable or NS.EllesmereAmmoBuyAvailable()) then NS.AddEllesmereAmmoBuyOptions(Row) end
+        if NS.AddEllesmereRestockOptions then NS.AddEllesmereRestockOptions(Row) end
+    end)
+    Append('EllesmereUIQoL','CLASS CUES',function(Row)
+        if NS.AddEllesmereClassCueOptions then NS.AddEllesmereClassCueOptions(Row) end
+    end)
+    Append('EllesmereUIQoL','CLASS SUPPLIES',function(Row)
+        if NS.AddEllesmereClassStockOptions then NS.AddEllesmereClassStockOptions(Row) end
+    end)
+    Append('EllesmereUIQoL','TRAINING',function(Row)
+        if NS.AddEllesmereAutoTrainOptions then NS.AddEllesmereAutoTrainOptions(Row) end
+        if NS.AddEllesmereTalentPlannerOptions then NS.AddEllesmereTalentPlannerOptions(Row) end
     end)
     Append('EllesmereUIQoL','LEVELING HELPERS',function(Row)
         if NS.AddEllesmereLevelingOptions then NS.AddEllesmereLevelingOptions(Row) end
@@ -803,7 +1120,7 @@ local function Install()
     Append('EllesmereUICooldownManager','COOLDOWN KEY LABELS',function(Row)
         if NS.AddEllesmereCdmLabelOptions then NS.AddEllesmereCdmLabelOptions(Row) end
     end)
-    Append('EllesmereUIQoL','HUNTER COLORS',function(Row)
+    Append('EllesmereUIQoL',ClassTitle('HUNTER COLORS'),function(Row)
         -- Plan section 5: the identity colours used by range, swing, cast and warning cues.
         local function Swatch(key,text,tip)
             return {type='colorpicker',text=text,hasAlpha=false,tooltip=tip,
@@ -818,12 +1135,17 @@ local function Install()
         local function Spec(key,text,tip) local c=Swatch(key,text,tip);return {tooltip=text..': '..tip,hasAlpha=false,getValue=c.getValue,setValue=c.setValue} end
         -- One row of swatches, the native multiSwatch (Ellesmere's row tools).
         Row({type='multiSwatch',text='Range And Attack Colors',tooltip='Shooting, melee, cast and retry: rings, bars, icons and cue text. Bars use a deeper shade.',
-            swatches={Spec('shoot','Shooting','in shooting range, Auto Shot rings, bars and icons'),Spec('melee','Melee','in melee range, the melee swing and Melee Ready'),
-                Spec('cast','Cast','your casts: the cast ring and world cues'),Spec('retry','Retry','Auto Shot retry: ring, icon and cue text')}},
+            -- Shooting and Retry are Auto Shot colors: hunters only (review R3-2).
+            swatches=(PlayerClass()==nil or PlayerClass()=='HUNTER') and {Spec('shoot','Shooting','in shooting range, Auto Shot rings, bars and icons'),Spec('melee','Melee','in melee range, the melee swing and Melee Ready'),
+                Spec('cast','Cast','your casts: the cast ring and world cues'),Spec('retry','Retry','Auto Shot retry: ring, icon and cue text')}
+                or {Spec('melee','Melee','in melee range and the melee swing'),Spec('cast','Cast','your casts: the cast ring and world cues')}},
             {type='multiSwatch',text='Warning Colors',tooltip='Danger: the dead zone and act-now warnings. Caution: approaching the dead zone, low ammo and other warnings.',
             swatches={Spec('danger','Danger','the dead zone and act-now warnings'),Spec('caution','Caution','approaching the dead zone, low ammo')}})
-        Row({type='button',text='Reset Hunter Colors',onClick=function()
-            FHKEllesmereDB.hunterColors=nil
+        -- Only this section's own colors: health, happiness, rarity and aggro colors set in their
+        -- own sections keep their values (review R3-2).
+        Row({type='button',text=(PlayerClass()==nil or PlayerClass()=='HUNTER') and 'Reset Hunter Colors' or 'Reset Cue Colors',onClick=function()
+            local t=FHKEllesmereDB.hunterColors
+            if type(t)=='table' then for _,key in ipairs({'shoot','melee','cast','retry','danger','caution'}) do t[key]=nil end end
             if NS.ApplyEllesmereHunterColours then NS.ApplyEllesmereHunterColours() end
             if EUI.RefreshPage then EUI:RefreshPage() end
         end},{type='label',text='Unset colors keep the Forever palette'})

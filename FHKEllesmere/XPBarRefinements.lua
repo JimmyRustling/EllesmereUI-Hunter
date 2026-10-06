@@ -3,6 +3,9 @@ local EUI,NS=_G.EllesmereUI,_G.FHKEllesmereNS
 if EUI_CLIENT_BLOCKED or not EUI or not NS then return end
 
 local DEFAULTS={quests=true,smooth=true,glow=true,ticks=true,tooltip=true,fullNumbers=true}
+-- {min,max,default}. The quest overlay has no stored default: the Colored theme mixes it
+-- opaque and other themes show it at 55 %, until the player picks a value.
+local OPACITY={tickOpacity={.05,.6,.12},glowOpacity={.1,1,.85},questOpacity={.1,1}}
 local driver=CreateFrame('Frame')
 local holder,bar,overlay,tickHost,ticks,gain,fade
 local nativeSetValue,nativeDividers,hookedDividers
@@ -28,6 +31,13 @@ function NS.EllesmereXPBarSettings()
     local s=FHKEllesmereDB.xpBar
     if type(s)~='table' then s={};FHKEllesmereDB.xpBar=s end
     for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
+    -- Opacities (review C12), stored 0-1 and validated on every read.
+    for k,l in pairs(OPACITY) do
+        local v=s[k]
+        if v~=nil or l[3]~=nil then s[k]=Plain(v) and math.max(l[1],math.min(l[2],v)) or l[3] end
+    end
+    local c=s.questColour
+    if c~=nil and not (type(c)=='table' and Plain(c.r) and Plain(c.g) and Plain(c.b)) then s.questColour=nil end
     return s
 end
 -- Ellesmere 9.3.8 has its own Quest XP Overlay (XP Bar > Quest XP Overlay). While it is on,
@@ -40,10 +50,13 @@ local function NativeQuestOverlay()
 end
 NS.EllesmereNativeQuestOverlay=NativeQuestOverlay
 local function QuestsOn(s) return s.quests and not NativeQuestOverlay() end
+-- Quest events stay registered while the option is on (review X6), so turning Ellesmere's
+-- own overlay off brings ours back on the next quest log update, not the next zone.
+local function QuestsWanted(s) return s.quests and true or false end
 local function Coloured() return NS.GetEllesmereThemePreset and NS.GetEllesmereThemePreset()=='coloured' end
 local function Enabled()
     local s=NS.EllesmereXPBarSettings()
-    return QuestsOn(s) or s.smooth or s.glow or s.ticks or s.tooltip or NS.EllesmereXPNumberFormat()~='native' or Coloured()
+    return QuestsWanted(s) or s.smooth or s.glow or s.ticks or s.tooltip or NS.EllesmereXPNumberFormat()~='native' or Coloured()
 end
 local function Snapshot()
     local xp,maxXP,level=Read(UnitXP,'player'),Read(UnitXPMax,'player'),Read(UnitLevel,'player')
@@ -61,7 +74,9 @@ local QUEST_GOLD,QUEST_ALPHA=NS.Colours and NS.Colours.questXP or {1,.82,0},.55
 local FORECAST,FORECAST_EDGE,TRACK=.5,.6,{.06,.06,.08}
 local function EarnedColour()
     local r,g,b
-    if bar then r,g,b=bar:GetStatusBarColor() end
+    -- 9.3.8 gradient fills set the bar white and paint the colour as a gradient (review X5).
+    local gradient=bar and type(bar._xpGrad)=='table' and bar._xpGrad.on
+    if bar and not gradient then r,g,b=bar:GetStatusBarColor() end
     if Plain(r) and Plain(g) and Plain(b) then return r,g,b end
     local c=NS.Colours and NS.Colours.xpFill or {118/255,45/255,178/255}
     return c[1],c[2],c[3]
@@ -196,7 +211,8 @@ local function LayoutTicks()
     local s=NS.EllesmereXPBarSettings()
     tickHost:SetShown(s.ticks)
     if not s.ticks then return end
-    nativeDividers=holder._fvDivHost
+    -- Ellesmere names it _divHost (review X3); _fvDivHost was only ever the test mock's name.
+    nativeDividers=holder._divHost or holder._fvDivHost
     if nativeDividers then
         if hookedDividers~=nativeDividers then
             hookedDividers=nativeDividers
@@ -213,7 +229,7 @@ local function LayoutTicks()
     for i,t in ipairs(ticks) do
         -- Soft light marks in every theme (player review: black ticks chopped the
         -- coloured fill into blocks; modern progress bars keep one calm surface).
-        if not t._soft then t:SetColorTexture(1,1,1,.12);t._soft=true end
+        if t._alpha~=s.tickOpacity then t:SetColorTexture(1,1,1,s.tickOpacity);t._alpha=s.tickOpacity end
         t:ClearAllPoints()
         if vertical then
             t:SetPoint('BOTTOMLEFT',bar,'BOTTOMLEFT',0,length*i/10)
@@ -230,7 +246,7 @@ local function ForecastColour(s)
     if Coloured() and NS.EllesmereVividFillEnabled and NS.EllesmereVividFillEnabled() and NS.EllesmereReadableBarFill then
         r,g,b=NS.EllesmereReadableBarFill(r,g,b)
     end
-    overlay:SetStatusBarColor(r,g,b,Coloured() and 1 or QUEST_ALPHA)
+    overlay:SetStatusBarColor(r,g,b,s and s.questOpacity or (Coloured() and 1 or QUEST_ALPHA))
 end
 -- Native earned-colour changes re-derive the forecast tint, then the edges.
 local function EarnedRecoloured()
@@ -263,7 +279,7 @@ local function Paint()
         tickHost=CreateFrame('Frame',nil,bar);tickHost:SetAllPoints(bar);tickHost:EnableMouse(false)
         ticks={}
         for i=1,9 do
-            local t=tickHost:CreateTexture(nil,'OVERLAY');t:SetColorTexture(1,1,1,.12);ticks[i]=t
+            local t=tickHost:CreateTexture(nil,'OVERLAY');t:SetColorTexture(1,1,1,s.tickOpacity);t._alpha=s.tickOpacity;ticks[i]=t
         end
     end
     LayoutTicks()
@@ -279,6 +295,7 @@ local function Glow(from,to,maxXP)
         local alpha=fade:CreateAnimation('Alpha')
         alpha:SetFromAlpha(.85);alpha:SetToAlpha(0);alpha:SetDuration(.8);alpha:SetSmoothing('OUT')
         fade:SetScript('OnFinished',function() gain:Hide() end)
+        fade.fromAlpha=alpha
     end
     StopGlow()
     local vertical=bar:GetOrientation()=='VERTICAL'
@@ -298,7 +315,9 @@ local function Glow(from,to,maxXP)
     if Coloured() then r,g,b=bar:GetStatusBarColor() else r,g,b=Accent() end
     if not Plain(r) or not Plain(g) or not Plain(b) then r,g,b=Accent() end
     gain:SetColorTexture(r+(1-r)*.4,g+(1-g)*.4,b+(1-b)*.4,1)
-    gain:SetAlpha(.85);gain:Show();fade:Play()
+    local opacity=NS.EllesmereXPBarSettings().glowOpacity
+    fade.fromAlpha:SetFromAlpha(opacity)
+    gain:SetAlpha(opacity);gain:Show();fade:Play()
 end
 local function XPChanged()
     local now=Snapshot()
@@ -414,7 +433,7 @@ function NS.SyncEllesmereXPBar()
         lastValue,lastMax,lastLevel=baseline and baseline.xp,baseline and baseline.max,baseline and baseline.level
         driver:RegisterEvent('ADDON_LOADED');driver:RegisterEvent('PLAYER_ENTERING_WORLD')
         if s.ticks or Coloured() then driver:RegisterEvent('UI_SCALE_CHANGED');driver:RegisterEvent('DISPLAY_SIZE_CHANGED') end
-        if QuestsOn(s) then driver:RegisterEvent('QUEST_LOG_UPDATE');driver:RegisterEvent('QUEST_TURNED_IN') end
+        if QuestsWanted(s) then driver:RegisterEvent('QUEST_LOG_UPDATE');driver:RegisterEvent('QUEST_TURNED_IN') end
         if s.glow or s.smooth or s.tooltip then
             driver:RegisterEvent('PLAYER_XP_UPDATE');driver:RegisterEvent('PLAYER_LEVEL_UP')
             previous=previous or Snapshot()
@@ -459,22 +478,48 @@ function NS.AddEllesmereXPBarOptions(Row)
         return {type='toggle',text=text,tooltip=tooltip,getValue=function() return s[key] end,
             setValue=function(v) s[key]=v;NS.SyncEllesmereXPBar() end}
     end
+    -- Ellesmere's row tools (review C12): each look has its opacity cog and colour swatch on
+    -- its own toggle; they grey out with the reason while the toggle is off (review C9).
+    local function Percent(label,key,min,max,fallback,tooltip)
+        return {type='slider',label=label,min=min,max=max,step=1,tooltip=tooltip,
+            get=function() local v=s[key];if not Plain(v) then v=fallback() end;return math.floor(v*100+.5) end,
+            set=function(v) if Plain(v) then s[key]=v/100;NS.EllesmereXPBarSettings();NS.SyncEllesmereXPBar();Paint() end end}
+    end
+    local NATIVE="Ellesmere's Quest XP Overlay (XP Bar page)"
+    local questsOff=function() return not s.quests or NativeQuestOverlay() end
+    local questsWhy=function() return NativeQuestOverlay() and 'This option is off while Ellesmere\'s own Quest XP Overlay is on' or 'Completed Quest XP' end
     local quests=Toggle('quests','Completed Quest XP','Shows known XP from completed quests awaiting turn-in. Stands down while Ellesmere\'s own Quest XP Overlay is on.')
-    quests.disabled=NativeQuestOverlay;quests.disabledTooltip="Ellesmere's Quest XP Overlay is on (XP Bar page)"
+    quests.disabled=NativeQuestOverlay;quests.disabledTooltip=NATIVE;quests.requireState='disabled'
+    quests.swatches={{tooltip='Completed Quest XP Color',hasAlpha=false,disabled=questsOff,disabledTooltip=questsWhy,
+        getValue=function() local c=QuestColour(s);return c[1],c[2],c[3],1 end,
+        setValue=function(r,g,b) if Plain(r) and Plain(g) and Plain(b) then s.questColour={r=r,g=g,b=b};Paint() end end}}
+    quests.cog={title='Completed Quest XP',disabled=questsOff,disabledTooltip=questsWhy,rows={
+        Percent('Opacity %','questOpacity',10,100,function() return Coloured() and 1 or QUEST_ALPHA end,
+            'The Colored theme shows it opaque and other themes at 55% until you choose.')}}
     Row(quests,
         Toggle('smooth','Smooth XP Fill','Eases gains and snaps when the level changes.'))
-    Row(Toggle('glow','XP Gain Glow','Briefly highlights the experience you just earned.'),
-        Toggle('ticks','10% XP Ticks','Replaces native dividers with subtle ten-percent marks.'))
+    local glow=Toggle('glow','XP Gain Glow','Briefly highlights the experience you just earned.')
+    glow.cog={title='XP Gain Glow',disabled=function() return not s.glow end,disabledTooltip='XP Gain Glow',rows={
+        Percent('Opacity %','glowOpacity',10,100,function() return OPACITY.glowOpacity[3] end)}}
+    local ticks=Toggle('ticks','10% XP Ticks','Replaces native dividers with subtle ten-percent marks.')
+    ticks.cog={title='10% XP Ticks',disabled=function() return not s.ticks end,disabledTooltip='10% XP Ticks',rows={
+        Percent('Opacity %','tickOpacity',5,60,function() return OPACITY.tickOpacity[3] end)}}
+    Row(glow,ticks)
     Row(Toggle('tooltip','Session XP Tooltip','Adds session XP, XP per hour and estimated time to level.'),
         {type='dropdown',text='XP Number Format',values={native='Ellesmere (17.6K)',full='Full (17,600)',round='Rounded (18K)'},order={'native','full','round'},
-            tooltip='How every XP text shows numbers. Ellesmere: in full below 10,000, then one decimal (17.6K). Full: always every digit. Rounded: the nearest thousand (18K).',
+            tooltip='How XP numbers show. Ellesmere: in full below 10,000, then one decimal (17.6K). Full: always every digit. Rounded: the nearest thousand (18K). Ellesmere 9.3.8 text slots always show values under 10,000 in full.',
             getValue=function() return NS.EllesmereXPNumberFormat() end,
             setValue=function(v) s.numbers=v;s.fullNumbers=(v=='full');NS.SyncEllesmereXPBar() end})
-    Row({type='label',text='Quest XP unavailable? Check /fhkxp'},{type='label',text='Full numbers apply to the raw-values readout'})
-    Row({type='colorpicker',text='Completed Quest XP Color',hasAlpha=false,
-        getValue=function() local c=QuestColour(s);return c[1],c[2],c[3],1 end,
-        setValue=function(r,g,b) s.questColour={r=r,g=g,b=b};Paint() end},
-        {type='button',text='Default Quest XP Color',onClick=function() s.questColour=nil;Paint() end})
+    Row({type='label',text='Quest XP unavailable? Check /fhkxp'},
+        {type='button',text='Default Quest XP Color',tooltip='Returns the completed quest XP to the theme color.',
+            disabled=function() return s.questColour==nil end,disabledTooltip='This option is available after picking a quest XP color',
+            onClick=function() s.questColour=nil;Paint() end})
+    if NS.EllesmereSectionReset then
+        Row(NS.EllesmereSectionReset('XP Bar Refinements',function()
+            for k in pairs(s) do s[k]=nil end
+            NS.EllesmereXPBarSettings();NS.SyncEllesmereXPBar();Paint()
+        end),{type='label',text='Text slots show values under 10,000 in full'})
+    end
 end
 InstallFullNumbers()
 SLASH_FHKXP1='/fhkxp'

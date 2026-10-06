@@ -11,23 +11,43 @@ local active={}
 local function Plain(v)
     return not (issecretvalue and issecretvalue(v)) and type(v)=='number' and v==v and math.abs(v)<math.huge
 end
+local function Owner()
+    if NS.EllesmerePersonalSetup then return NS.EllesmerePersonalSetup()==true end
+    return _G.ForeverHunterKeysNS~=nil
+end
+-- Snap the real fill at once? A choice the player made wins; unset follows the install.
+local function Instant(cfg)
+    if cfg.instantHealth~=nil then return cfg.instantHealth==true end
+    return Owner()
+end
+NS.EllesmereDamageTrailInstant=Instant
 function NS.EllesmereDamageTrailSettings(kind)
     if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
-    FHKEllesmereDB.damageTrails=FHKEllesmereDB.damageTrails or {}
+    if type(FHKEllesmereDB.damageTrails)~='table' then FHKEllesmereDB.damageTrails={} end
     local all=FHKEllesmereDB.damageTrails
     if not rawget(FHKEllesmereDB,'quickDamageTrailApplied') then
         local before={}
         for _,key in ipairs({'unitframes','nameplates'}) do
             local s=all[key]
-            if s and s.duration==.28 then before[key]=s.duration;s.duration=.18 end
+            if type(s)=='table' and s.duration==.28 then before[key]=s.duration;s.duration=.18 end
         end
         rawset(FHKEllesmereDB,'damageTrailDurationBefore',before)
         rawset(FHKEllesmereDB,'quickDamageTrailApplied',true)
     end
     -- colour nil is the damage red; a picked colour is stored.
-    all[kind]=all[kind] or {enabled=true,duration=.18,opacity=.85}
+    if type(all[kind])~='table' then all[kind]={enabled=true,duration=.18,opacity=.85} end
     local s=all[kind]
-    if s.instantHealth==nil then s.instantHealth=true end
+    -- Instant Health has no stored default (suite review SF-7): it cancels Ellesmere's own
+    -- Smooth Bars, so unset it follows Ellesmere except on the owner's install. Earlier
+    -- versions stored true for everyone; that unchosen value is dropped on published installs.
+    if s.instantHealth==true and s.instantChosen~=true and not Owner() then s.instantHealth=nil end
+    -- Damaged saved values fall back to their defaults (a hand edit, an old version).
+    if type(s.enabled)~='boolean' and s.enabled~=nil then s.enabled=true end
+    if s.instantHealth~=nil and type(s.instantHealth)~='boolean' then s.instantHealth=nil end
+    if not Plain(s.duration) then s.duration=.18 else s.duration=math.max(.1,math.min(.6,s.duration)) end
+    if s.opacity~=nil and not Plain(s.opacity) then s.opacity=.85 elseif s.opacity then s.opacity=math.max(.1,math.min(1,s.opacity)) end
+    local c=s.colour
+    if c~=nil and not (type(c)=='table' and Plain(c.r) and Plain(c.g) and Plain(c.b)) then s.colour=nil end
     -- The faint accent default (40%) read as no feedback at all: move the old
     -- default once to the clearer red flash. Picked values are kept.
     if s.redFlash==nil then
@@ -126,9 +146,11 @@ end
 local function Changed(bar,value)
     local state=tracked[bar]
     if not state then return end
+    -- Your own bar's warning colour follows the value at once (suite review SF-18).
+    if NS.RepaintEllesmereOwnBar then NS.RepaintEllesmereOwnBar(bar) end
     local cfg=NS.EllesmereDamageTrailSettings(state.kind)
     -- Finish native interpolation without inspecting health, including secret values.
-    if cfg.enabled~=false and cfg.instantHealth~=false and bar.SetToTargetValue then bar:SetToTargetValue() end
+    if cfg.enabled~=false and Instant(cfg) and bar.SetToTargetValue then bar:SetToTargetValue() end
     local guid=state.unit and UnitGUID and UnitGUID(state.unit)
     if issecretvalue and issecretvalue(guid) then guid=nil end
     if state.guid and guid and state.guid~=guid then Clear(bar,state) end
@@ -192,19 +214,32 @@ function NS.ClearEllesmereDamageTrails()
 end
 function NS.AddEllesmereDamageTrailOptions(Row,kind)
     local s=NS.EllesmereDamageTrailSettings(kind)
-    Row({type='toggle',text='Damage Flash',tooltip='Lost health shows in red and drains quickly; the real health fill and text update at once.',getValue=function() return s.enabled end,
-        setValue=function(v) s.enabled=v;NS.ClearEllesmereDamageTrails() end},
-        {type='slider',text='Damage Flash Duration',tooltip='Readable values only; in combat the game eases the flash at its own speed.',min=.1,max=.6,step=.02,
-            getValue=function() return s.duration end,setValue=function(v) s.duration=v end})
-    Row({type='toggle',text='Instant Health Feedback',
-        tooltip='Health text and the real fill update immediately; only the lost-health segment drains. Overrides native health smoothing while Damage Trail is enabled.',
-        getValue=function() return s.instantHealth end,setValue=function(v) s.instantHealth=v;NS.ClearEllesmereDamageTrails() end},
-        {type='label',text='Only the lost-health segment animates'})
-    Row({type='slider',text='Damage Flash Opacity %',min=10,max=100,step=5,
-        getValue=function() return math.floor((s.opacity or .85)*100+.5) end,setValue=function(v) s.opacity=v/100 end},
-        {type='colorpicker',text='Damage Flash Color',hasAlpha=false,
-            getValue=function() local r,g,b=TrailColour(s);return r,g,b,1 end,
-            setValue=function(r,g,b) s.colour={r=r,g=g,b=b} end},true)
+    -- Ellesmere's row tools (review C10): duration and opacity in the cog, the colour as a
+    -- swatch; they grey out with the reason while the flash cannot show (review C9).
+    local function Calm() return NS.EllesmereReduceMotion and NS.EllesmereReduceMotion() or false end
+    local off=function() return s.enabled==false or Calm() end
+    local why=function() return s.enabled==false and 'Damage Flash' or 'This option is paused while Reduce Companion Motion is on' end
+    local flash={type='toggle',text='Damage Flash',tooltip='Lost health shows in red and drains quickly; the real health fill and text update at once.',
+        getValue=function() return s.enabled~=false end,setValue=function(v) s.enabled=v;NS.ClearEllesmereDamageTrails() end}
+    flash.swatches={{tooltip='Damage Flash Color',hasAlpha=false,disabled=off,disabledTooltip=why,
+        getValue=function() local r,g,b=TrailColour(s);return r,g,b,1 end,
+        setValue=function(r,g,b) if Plain(r) and Plain(g) and Plain(b) then s.colour={r=r,g=g,b=b} end end}}
+    flash.cog={title='Damage Flash',disabled=off,disabledTooltip=why,rows={
+        {type='slider',label='Duration',min=.1,max=.6,step=.02,tooltip='Readable values only; in combat the game eases the flash at its own speed.',
+            get=function() return s.duration end,set=function(v) if Plain(v) then s.duration=math.max(.1,math.min(.6,v)) end end},
+        {type='slider',label='Opacity %',min=10,max=100,step=5,
+            get=function() return math.floor((s.opacity or .85)*100+.5) end,set=function(v) if Plain(v) then s.opacity=math.max(.1,math.min(1,v/100)) end end}}}
+    Row(flash,{type='toggle',text='Instant Health Feedback',disabled=off,disabledTooltip=why,
+        tooltip='Health text and the real fill update immediately; only the lost-health segment drains. On, it overrides Ellesmere Smooth Bars.',
+        getValue=function() return Instant(s) end,setValue=function(v) s.instantHealth=v==true;s.instantChosen=true;NS.ClearEllesmereDamageTrails() end})
+    if NS.EllesmereSectionReset then
+        Row(NS.EllesmereSectionReset('Damage Flash',function()
+            for k in pairs(s) do s[k]=nil end
+            s.enabled,s.duration,s.opacity,s.redFlash=true,.18,.85,true
+            NS.ClearEllesmereDamageTrails()
+        end,'Restores the Damage Flash settings in this section to their defaults. The other page keeps its own.'),
+            {type='label',text='Only the lost-health segment animates'})
+    end
 end
 driver:RegisterEvent('PLAYER_TARGET_CHANGED');driver:RegisterEvent('NAME_PLATE_UNIT_ADDED')
 driver:RegisterEvent('NAME_PLATE_UNIT_REMOVED');driver:RegisterEvent('PLAYER_ENTERING_WORLD')

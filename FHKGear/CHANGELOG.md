@@ -2,6 +2,65 @@
 
 Evidence levels: E1 = static checks, E2 = mocked tests, E3 = seen working in game. Only E3 means "works".
 
+## 0.5.3 (2026-10-06, Claude, build agent H, lead review fixes): feature review G1-G4, G9-G14, D8; non-gear roll modes; Bind on Equip Up To; adversarial review R3-3 to R3-5
+
+- **Adversarial review fixes (lead, E2):**
+  - **R3-3:** automation and its confirmations stay with the character. An imported profile never turns on Auto-Equip, Auto-Quest, Auto-Roll, Need on non-gear loot, the rarity caps or auto-confirm.
+  - **R3-4:** on a loot roll, a Bind on Pickup item is not yet yours, so the rarity cap holds even with Bind on Equip Only.
+  - **R3-5:** non-gear loot you cannot use is always your roll.
+  - Tests: 703.
+- **Why:** class kits build, row H (`FHK-Ellesmere-Patch/BUILD_PLAN_CLASS_KITS_2026-10-06.md`); items from `FEATURE_REVIEW_2026-10-06.md` section E and D8. Version 0.5.3.
+- **G1 Spec in use:** the Automation status line ends "Weights: <spec> (chosen / detected / no spec detected)", plus ", Hunter Model" when the live model scores. `/fhkgear status` says the same. A Rogue with no spec now compares any weapon (was daggers only). E1/E2.
+- **G2 Roll etiquette** (Automation > LOOT ROLLS, all off by default):
+  - **Minimum Need Gain** (0-50 %): Need only when the gain is at least this share of the replaced item's score. An empty slot always counts.
+  - **Need Only My Armor Type**: cloth / leather / mail / plate by class, Mail (Hunter, Shaman) and Plate (Warrior, Paladin) from level 40. Cloaks, jewelry and weapons are exempt.
+  - **Need Only My Main Stat**: the highest of Agility, Strength and Intellect in the weights in use. Items with none of the three are judged by score.
+  - An upgrade a rule rules out is Greed (with Greed on Other Loot), or left to you.
+  - **Non-Gear Loot Rolls** (Player Roll / Greed / Need, default Player Roll) with **Non-Gear Up To** (a rarity, default Uncommon). Player: "non gear loot should not default to auto greed think mounts or whatever it should be a player roll or need" and "a toggle for auto need non loot rolls". Non-gear rolls used to be Greed under Greed on Other Loot; they are now your roll and an update does not carry that over. Need is used only where the roll allows it, never a silent Greed. Mounts, pets, recipes, quest items, keys and unknown items are always your roll. Checked before the setup search, so non-gear rolls cost less. E2.
+  - **Bind on Equip Up To** (a rarity, default Uncommon; player: "auto bind on equip should also have an up to x rareness"): bind-on-equip upgrades auto-equip only at this rarity and below. **Behaviour change:** with Auto-Equip Up To raised to Rare, blue BoE upgrades now stay in the bags, marked, until this is raised too. Upgrade markers are unaffected by either cap. E2.
+  - Rarity choices are written in their quality colors (existing for Auto-Equip Up To; now also the two new caps).
+- **G3 Shift:** holding Shift as the quest reward window opens (or when Gear would pick) leaves the choice to you for that window. Rewards are still marked; an unreadable Shift key never blocks the pick. `IsShiftKeyDown` verified in `InputDocumentation.lua`. E2.
+- **G4 Rarity Cap: Bind on Equip Only** (off): items already bound to you (Soulbound, Bind on Pickup) pass the rarity cap, for auto-equip and Need. BoE and unbound items keep the cap; Auto-Equip Bind-on-Equip still applies. E2.
+- **G9:** the Phase tooltip says Phase switches only your own weights, and warns when it has no effect now. E2.
+- **G10:** the AutoGear migration is never silent: one chat line names the copied weight scales, one says how many slot locks wait for Import Locks (even with Chat Messages off, once). The Disable AutoGear row says what was copied; its dialog lists what AutoGear does on this character and which Gear toggle covers it (and its state), or that Gear does not do it. E2.
+- **G11 Tooltip:** "+2.5 upgrade over Hunting Bow"; gear above your level reads "upgrade at level 30 (...)" or "usable at level 25, not an upgrade" (items whose only red line is the level requirement: `info.levelOnly`). Gear you cannot use gets no line (was "blocked - ..."). `Engine.Verdict` returns the replaced item as a 4th value and takes an optional level. E2.
+- **G12 Color tokens:** `ns.Colour(key)` / `ns.ColourCode(key)` for upgrade, muted, greed, skill, caution, gain, loss (defaults = the old colors). New Markers > TEXT COLORS section: a native picker per token and a Reset. Saved per character in `FHKGearCharDB.textColours`, validated on read and in profiles. E2.
+- **G13:** each automatic action is reported once: its pop-up card, or one chat line when no card showed (equip, quest reward and roll now all have the chat fallback). No settings change. E2.
+- **G14 Color-Blind Markers** (Markers > APPEARANCE, Apply): blue arrow for upgrades, orange coin for greed, matching text tokens. Marker Appearance and Text Colors Reset undo it. E2.
+- **D8:** Tame Beast (pet counted) reads `C_SpellBook.IsSpellKnown` first, then the `IsPlayerSpell` / `IsSpellKnown` shims. The talent-rank fallback had the same list in an `ipairs` that stopped at a missing `C_SpellBook`; both now ask in turn. A secret answer is unknown. E2.
+- **Labels:** "Center", "Color" in Gear labels and tooltips (US wording).
+- **E2:** 661 checks (+156), `tests/release_053.lua`. **No E3.** Probes below.
+- **E3 probes owed:** `/dump C_SpecializationInfo.GetSpecialization(), C_SpecializationInfo.GetSpecializationInfo(1)` on a talented non-hunter (G1); Shift-open a quest reward with Auto-Pick on (G3); a soulbound blue quest reward with Bind on Equip Only (G4); hover a level+5 item (G11); a group roll on cloth and on wrong-armor gear with the rules on (G2); `/dump C_SpellBook.IsSpellKnown(1515)` before and after level 10 on a Hunter (D8).
+
+## 0.5.2 (2026-10-06, Claude): adversarial review fixes
+- **Why:** player: a comprehensive performance and error review of every feature, using parallel agents. Full table: `FHK-Ellesmere-Patch/ADVERSARIAL_REVIEW_2026-10-06.md`, sections 9-10.
+- **Automation respects the player:**
+  - A slot you change by hand is left alone until your next level.
+  - An item Gear took off is not put back over another for 10 minutes, so live weights cannot swap two near-equal items back and forth.
+  - A second failed equip, or a declined bind prompt, ends retries for that item for the session.
+  - Nothing is picked up while you are dead or dragging a spell.
+- **Ammo:** a handful of better ammo no longer replaces a full stack. It needs 200, or at least as many as the worn stack.
+- **Rolls:**
+  - Answered in combat too (`RollOnLoot` is not protected).
+  - Need follows the auto-equip rarity, Bind on Equip and bag rules; an upgrade outside them is a manual roll.
+  - The roll mark sits on the item icon.
+- **Data and markers:**
+  - Reward links that are not built yet are retried.
+  - Bag marks read each button's slot live, use Blizzard's container enumerator, and use Ellesmere's public overlay hook (`RegisterItemOverlayIcon`, unregistered when off).
+- **Profiles and weights:**
+  - Profiles accept the Hunter Model source.
+  - Clicking in and out of a weight box saves nothing.
+  - Pawn scales with "unusable" entries import.
+  - A single rating conversion is accepted.
+- **Hunter model:**
+  - Ammo above your level does not count.
+  - No pet is counted before Tame Beast.
+  - Ability Adjusted scores a non-dagger as 0, not "unavailable".
+- **Performance:**
+  - In combat, bag updates (every Auto Shot changes the quiver) do no work until combat ends.
+  - Upgrade Found scans wait for combat to end, so no card is lost.
+- **E2:** 505 checks (+36). **No E3.** In-game checks 22, 23 and 31 in `IN_GAME_CHECKS_2026-10-05.md`.
+
 ## 0.5.1 (2026-10-04, Claude): weapon skill on pop-ups
 - **Why:** master to-do §10.2 (weapon skill readout). The player: "weapon skill can be levelled on an upgrade".
 - **Result:**

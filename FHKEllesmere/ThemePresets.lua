@@ -17,7 +17,9 @@ local function State(write)
         if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
         FHKEllesmereDB.themePresets=FHKEllesmereDB.themePresets or {}
         local presets=FHKEllesmereDB.themePresets
-        presets[name]=presets[name] or {};return presets[name]
+        presets[name]=presets[name] or {}
+        if NS.EllesmereStampSnapshot then NS.EllesmereStampSnapshot('themePresets',name) end
+        return presets[name]
     end
     return FHKEllesmereDB and FHKEllesmereDB.themePresets and FHKEllesmereDB.themePresets[name]
 end
@@ -111,7 +113,8 @@ local function CaptureCastStates()
     local ufp=UnitFrameProfile()
     for _,unit in ipairs(UF_CAST_UNITS) do
         local p=ufp and ufp[unit]
-        if p then saved.uf[unit]={};for key in pairs(UF_CAST) do saved.uf[unit][key]=Copy(p[key]) end end
+        -- rawget (review T8): AceDB defaults must stay defaults after a Restore.
+        if p then saved.uf[unit]={};for key in pairs(UF_CAST) do saved.uf[unit][key]=Copy(rawget(p,key)) end end
     end
     local npp=PlateProfile()
     if npp then for key in pairs(NP_CAST) do saved.np[key]=Copy(rawget(npp,key)) end end
@@ -143,6 +146,27 @@ local function Replace(target,source)
     if type(target)~='table' then return end
     for key in pairs(target) do target[key]=nil end
     for key,value in pairs(source or {}) do target[key]=Copy(value) end
+end
+-- Player edits made after a preset (review T1): a key whose value differs from what the preset
+-- wrote is the player's, and survives a switch to another preset. Restore Original Look and a
+-- version migration re-apply keep no edits.
+local NONE={} -- transient sentinel: the player cleared this key
+local function Same(a,b)
+    if type(a)~='table' or type(b)~='table' then return a==b end
+    for k,v in pairs(a) do if not Same(v,b[k]) then return false end end
+    for k in pairs(b) do if a[k]==nil then return false end end
+    return true
+end
+local function Edits(current,applied)
+    local out={}
+    if type(current)~='table' or type(applied)~='table' then return out end
+    for k,v in pairs(current) do if not Same(v,applied[k]) then out[k]=Copy(v) end end
+    for k in pairs(applied) do if current[k]==nil then out[k]=NONE end end
+    return out
+end
+local function Reapply(target,edits)
+    if type(target)~='table' or type(edits)~='table' then return end
+    for k,v in pairs(edits) do if v==NONE then target[k]=nil else target[k]=Copy(v) end end
 end
 local function DarkStates()
     local out={}
@@ -190,8 +214,9 @@ local function Restore(saved)
     if xp and saved.xp then
         for _,key in ipairs(XP_FIELDS) do xp[key]=Copy(saved.xp[key]) end
     end
+    -- A toggle registered after the backup was taken was off then (review T4).
     for _,provider in ipairs(EUI._darkModeToggles or {}) do
-        if saved.flags[provider.id]~=nil then provider.setOn(saved.flags[provider.id]) end
+        if provider.id and type(saved.flags)=='table' then provider.setOn(saved.flags[provider.id]==true) end
     end
     local raid=EUI._ModuleNS and EUI._ModuleNS.EllesmereUIRaidFrames
     if saved.raid and raid and raid.db and raid.db.profile then
@@ -284,6 +309,9 @@ end
 local function Refresh()
     local _,uf=UnitFrameProfile()
     if uf and uf.ReloadFrames then uf.ReloadFrames() end
+    -- Plates repaint on every preset change, Restore included (review T7).
+    local _,np=PlateProfile()
+    if np and np.RefreshAllSettings then pcall(np.RefreshAllSettings) end
     if EUI.RefreshDarkMode then EUI.RefreshDarkMode() end
     if EUI.RefreshAccent then EUI.RefreshAccent() end
     local _,rb=ResourceProfile()
@@ -385,7 +413,7 @@ end
 function NS.SyncEllesmereVividTheme()
     local s=State()
     if s and s.active=='coloured' and s.vividVersion~=VIVID_VERSION then
-        NS.ApplyEllesmereThemePreset('coloured')
+        NS.ApplyEllesmereThemePreset('coloured',true)
     end
     NS.SyncEllesmereXPTheme()
     -- Existing Coloured profiles return to WoW class colours once; only our own
@@ -433,7 +461,7 @@ end
 function NS.GetEllesmereThemePreset()
     local s=State();return s and s.active or 'current'
 end
-function NS.ApplyEllesmereThemePreset(key)
+function NS.ApplyEllesmereThemePreset(key,migrating)
     if key~='coloured' and key~='dark' and key~='afterglow' and key~='current' then return false,'Unknown preset.' end
     if not EUI.IS_FOREVER then return false,'These presets are for WoW Forever.' end
     if not EUI.GetDarkModeDB or not NativeColors() or not EUI.SetAccentColor then return false,'Native colour controls are unavailable.' end
@@ -452,6 +480,8 @@ function NS.ApplyEllesmereThemePreset(key)
     if s.backup.xp==nil then s.backup.xp=Copy(before.xp) end
     if s.backup.playerCast==nil then s.backup.playerCast=Copy(before.playerCast) end
     if s.backup.casts==nil then s.backup.casts=Copy(before.casts) end
+    -- Restore Original Look stays an exact roundtrip to the original (tested contract).
+    local edits=not migrating and key~='current' and type(s.applied)=='table' and {colors=Edits(NativeColors(),s.applied.colors),dark=Edits(EUI.GetDarkModeDB(),s.applied.dark)} or nil
     applying=true
     local ok=pcall(function()
         Restore(s.backup)
@@ -476,6 +506,7 @@ function NS.ApplyEllesmereThemePreset(key)
             d.powerDarken,d.powerBgDarken=70,85
             if EUI.SetActiveTheme then EUI.SetActiveTheme('Dark') end
         elseif key=='afterglow' then ApplyPalette();Dark(true,false) end
+        if edits then Reapply(NativeColors(),edits.colors);Reapply(EUI.GetDarkModeDB(),edits.dark) end
     end)
     if not ok then
         local restored=pcall(Restore,before);applying=nil;pending=nil;pcall(Refresh)
@@ -488,6 +519,8 @@ function NS.ApplyEllesmereThemePreset(key)
     if key=='coloured' then s.castVersion=CAST_VERSION end
     if key=='current' then s.active=nil end
     if key=='current' then s.backup=nil end
+    -- What the preset wrote, so later player edits can be told apart (review T1).
+    s.applied=key~='current' and {colors=Copy(NativeColors()),dark=Copy(EUI.GetDarkModeDB())} or nil
     pending=nil;pendingXP=nil;applying=nil;Refresh()
     if EUI.Conditions_Recheck then EUI.Conditions_Recheck() end
     if EUI.RefreshPage then EUI:RefreshPage() end

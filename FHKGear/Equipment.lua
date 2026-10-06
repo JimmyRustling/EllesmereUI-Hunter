@@ -35,7 +35,8 @@ function E.FromInventory(id)
 end
 -- Reagent bags fit only the reagent bag slot, and general bags never go there.
 function E.IsReagentBag(info)
-    local sub=Enum and Enum.ItemContainerSubclass and Enum.ItemContainerSubclass.ReagentContainer
+    -- Forever's enum field is Reagent (API audit 2026-10-06).
+    local sub=Enum and Enum.ItemContainerSubclass and (Enum.ItemContainerSubclass.Reagent or Enum.ItemContainerSubclass.ReagentContainer)
     return info and info.classID==1 and info.subclassID==(S.Number(sub) and sub or 11) or false
 end
 -- Ammo containers (quivers, ammo pouches: item class 11) are a Hunter's core bag. A worn one keeps its
@@ -77,6 +78,19 @@ local function AmmoType()
 end
 local function AmmoDPS(info) return S.Number(info.stats.DPS) and info.stats.DPS or 0 end
 local function AmmoUsable(info) return info.usable and (info.reqLevel or 0)<=ns.Level() and not ns.Char().ignore[info.id] end
+-- Enough of it to matter (review GC2): a handful of better arrows runs out mid-fight, and an empty
+-- ammo slot stops Auto Shot until combat ends. Unknown counts keep the old behaviour.
+local AMMO_MINIMUM=200
+local function AmmoCount(id)
+    local n=S.Read(C_Item and C_Item.GetItemCount or GetItemCount,id)
+    return S.Number(n) and n or nil
+end
+local function AmmoPlenty(info,worn)
+    local n=AmmoCount(info.id)
+    if not n or n>=AMMO_MINIMUM or not worn then return true end
+    local have=AmmoCount(worn.id)
+    return have~=nil and n>=have
+end
 local function WornAmmo(want)
     local link=S.Read(GetInventoryItemLink,'player',0)
     local info=S.Text(link) and ns.Items.Read(link) or nil
@@ -92,7 +106,7 @@ function E.AmmoJob()
     local best
     for _,job in ipairs(E.BagItems()) do
         local i=job.info
-        if i.classID==6 and i.subclassID==want and not i.missing and AmmoUsable(i) and AmmoDPS(i)>floor+0.0001 and (not best or AmmoDPS(i)>AmmoDPS(best.info)) then
+        if i.classID==6 and i.subclassID==want and not i.missing and AmmoUsable(i) and AmmoDPS(i)>floor+0.0001 and (not best or AmmoDPS(i)>AmmoDPS(best.info)) and AmmoPlenty(i,worn) then
             best={bag=job.bag,slot=job.slot,info=i,target=0,delta=AmmoDPS(i)-math.max(0,floor),reason='Better ammo'}
         end
     end
@@ -111,8 +125,11 @@ function E.AmmoVerdict(info)
     return 'not better than your equipped ammo',false
 end
 local MAIN,OFF={16},{17}
-function E.Slots(info,w)
-    if not info or not info.usable or (info.reqLevel or 0)>ns.Level() then return nil end
+-- atLevel (tooltips only, review G11): judge an item as if you were that level. An item whose only
+-- block is its level requirement (info.levelOnly) then counts as usable.
+function E.Slots(info,w,atLevel)
+    if not S.Number(atLevel) then atLevel=nil end -- callers pass Weights.Current(), which also returns its source
+    if not info or not (info.usable or atLevel and info.levelOnly) or (info.reqLevel or 0)>(atLevel or ns.Level()) then return nil end
     local c=ns.Char();if c.ignore[info.id] or c.ignoreLinks[info.link] then return nil end
     local style=c.weaponStyle~='preset' and c.weaponStyle or w and w.weapons or 'any'
     local loc,dual=info.equipLoc,S.Yes(S.Read(CanDualWield))
@@ -210,9 +227,10 @@ local function Replacement(info,slot,set)
     elseif slot==17 and set[16] and set[16].info and set[16].info.equipLoc=='INVTYPE_2HWEAPON' then return nil end
     return out
 end
-function E.Verdict(info,set)
+function E.Verdict(info,set,atLevel)
+    if not S.Number(atLevel) then atLevel=nil end
     if not info or info.missing then return nil,nil,'Item data pending' end
-    local slots=E.Slots(info,ns.Weights.Current());if not slots then return nil,nil,info.reason or 'Blocked by requirements or equipment rules' end
+    local slots=E.Slots(info,ns.Weights.Current(),atLevel);if not slots then return nil,nil,info.reason or 'Blocked by requirements or equipment rules' end
     set=set or E.Equipped()
     local base=E.SetupScore(set);if not S.Number(base) then return nil,nil,'Equipped comparison unavailable' end
     local best,target
@@ -229,7 +247,8 @@ function E.Verdict(info,set)
     if not target then return nil,nil,'No supported upgrade' end
     local current=set[target]
     if not current or not current.info then return best-base,target,'Fills an empty slot' end
-    return best-base,target,('+%.1f over %s'):format(best-base,current.info.name or 'equipped item')
+    -- The replaced item is the fourth value, so tooltips can name it (review G11).
+    return best-base,target,('+%.1f over %s'):format(best-base,current.info.name or 'equipped item'),current.info
 end
 -- An automatic choice is only as certain as the items it touches: the candidate, whatever it
 -- replaces, and a second Use: effect it would sit beside (shared cooldowns are not readable).
@@ -448,17 +467,97 @@ function E.QuestChoice()
     if index then return index,'upgrade',why,upgrades end
     return vendor,'vendor','No upgrade: highest vendor value',upgrades,vendor
 end
+-- Roll etiquette (review G2). Armour type by class: {from level 40, below 40}. Classic-era proficiencies:
+-- Hunters and Shamans learn Mail at 40, Warriors and Paladins Plate at 40. Item armour subclasses:
+-- 1 Cloth, 2 Leather, 3 Mail, 4 Plate. Cloaks are cloth for everyone and never count.
+local ARMOR={WARRIOR={4,3},PALADIN={4,3},HUNTER={3,2},SHAMAN={3,2},ROGUE={2,2},DRUID={2,2},MAGE={1,1},PRIEST={1,1},WARLOCK={1,1}}
+E.ARMOR_NAMES={'Cloth','Leather','Mail','Plate'}
+function E.ArmorType()
+    local _,class=S.Read(UnitClass,'player')
+    local t=S.Text(class) and ARMOR[class]
+    if not t then return nil end
+    return ns.Level()>=40 and t[1] or t[2]
+end
+-- The class or spec's main stat: the highest of Agility, Strength and Intellect in the weights in use.
+local PRIMARY={'Agility','Strength','Intellect'}
+function E.MainStat(w)
+    w=w or ns.Weights.Current() or {}
+    local best,value
+    for _,stat in ipairs(PRIMARY) do
+        local v=w[stat]
+        if S.Number(v) and v>0 and (not value or v>value) then best,value=stat,v end
+    end
+    return best
+end
+-- Why Need would be bad etiquette for this upgrade, or nil. Each rule is its own toggle, off by default.
+function E.NeedBlocked(info,delta,target,set)
+    local c=ns.Char()
+    if c.rollNeedArmorType and info.classID==4 and info.equipLoc~='INVTYPE_CLOAK' and S.Number(info.subclassID) and info.subclassID>=1 and info.subclassID<=4 then
+        local mine=E.ArmorType()
+        if mine and info.subclassID~=mine then return 'Not your armor type (' .. E.ARMOR_NAMES[mine] .. ')' end
+    end
+    if c.rollNeedMainStat then
+        local main,hasPrimary=E.MainStat(),false
+        for _,stat in ipairs(PRIMARY) do if S.Number(info.stats[stat]) and info.stats[stat]>0 then hasPrimary=true end end
+        -- Items with no primary stat (weapon damage, spell power, a ring of Stamina) are judged by score alone.
+        if main and hasPrimary and not (S.Number(info.stats[main]) and info.stats[main]>0) then return 'No ' .. main end
+    end
+    local minimum=S.Number(c.rollMinGain) and math.max(0,math.min(100,c.rollMinGain)) or 0
+    if minimum>0 and S.Number(delta) then
+        local worn=set and set[target] and set[target].info
+        local score=worn and E.Score(worn,target)
+        -- An empty slot, or a worn item worth nothing, is always a big enough gain.
+        if S.Number(score) and score>0.0001 and delta/score*100<minimum then
+            return ('Gain %.0f%% is below your Minimum Need Gain (%d%%)'):format(delta/score*100,minimum)
+        end
+    end
+    return nil
+end
+-- Non-Gear Loot Rolls (player, 2026-10-06: "non gear loot should not default to auto greed think mounts
+-- or whatever it should be a player roll or need"; "a toggle for auto need non loot rolls"): Player
+-- Roll by default; Greed or Need only up to the chosen rarity, and never a mount, pet, recipe, quest
+-- item or key. Unknown item data is the player's roll.
+-- Item classes: 9 Recipe, 12 Quest, 13 Key, 15 Miscellaneous (2 companion pet, 5 mount), 17 Battle pet.
+function E.NonGearAllowed(info,maxQuality)
+    maxQuality=S.Number(maxQuality) and maxQuality or 2
+    if not S.Table(info) or not S.Number(info.quality) or info.quality>maxQuality or not S.Number(info.classID) then return false end
+    -- Something the client says you cannot use (another class's token, a red tooltip line) is yours to roll (R3-5).
+    if info.usable==false then return false end
+    local c,sc=info.classID,info.subclassID
+    if c==9 or c==12 or c==13 or c==17 then return false end
+    if c==15 and (sc==2 or sc==5 or not S.Number(sc)) then return false end
+    return true
+end
 function E.RollChoice(id)
     E.BeginPass()
     local link=S.Read(GetLootRollItemLink,id);local info=link and ns.Items.Read(link)
     if not info or info.missing then E.EndPass();return nil,'pending' end
     local _,_,_,_,_,need,greed=S.Read(GetLootRollItemInfo,id)
+    -- Non-gear loot (cloth, recipes, ammo...) is never an upgrade (review G2): Greed only with its own toggle.
+    if not SLOTS[info.equipLoc] then
+        E.EndPass()
+        local c=ns.Char()
+        if c.rollNonGear~='player' and E.NonGearAllowed(info,c.rollNonGearMaxQuality) then
+            if c.rollNonGear=='need' and S.Yes(need) then return 1,'Non-gear loot',info,false end
+            if c.rollNonGear=='greed' and S.Yes(greed) then return 2,'Non-gear loot',info,false end
+        end
+        return nil,'Non-gear loot: choose manually',info,false
+    end
     local baseline,complete=E.BagBaseline()
     if not complete then E.EndPass();return nil,'Setup search incomplete: choose manually',info end
     local delta,target,reason=E.Verdict(info,baseline)
     local certain=not delta or E.TouchedKnown(baseline,info,target)
     E.EndPass()
     if not E.AutomationSafe(info) or not certain then return nil,'Model uncertainty: choose manually',info,delta~=nil end
+    -- Need follows the auto-equip rules (review GC6): rarity cap, Bind on Equip and bag settings.
+    local bag=info.equipLoc=='INVTYPE_BAG' or info.equipLoc=='INVTYPE_QUIVER'
+    if delta and (not ns.AutoEquipAllowed(info,true) or bag and not ns.Char().autoBags) then return nil,'Upgrade outside your auto-equip rules: choose manually',info,true end
+    -- Etiquette rules (review G2): such an upgrade is not worth a Need; Greed it when Greed on Other Loot allows.
+    local blocked=delta and ns.Char().rollNeedUpgrades and E.NeedBlocked(info,delta,target,baseline)
+    if blocked then
+        if S.Yes(greed) and ns.Char().rollGreedOthers then return 2,blocked,info,true end
+        return nil,blocked .. ': choose manually',info,true
+    end
     if delta and S.Yes(need) and ns.Char().rollNeedUpgrades then return 1,reason,info,true end
     if delta and not ns.Char().rollNeedUpgrades then return nil,'Need on upgrades is off: choose manually',info,true end
     if S.Yes(greed) and ns.Char().rollGreedOthers then return 2,delta and 'Upgrade, but Need is not allowed' or 'Not an upgrade',info,delta~=nil end

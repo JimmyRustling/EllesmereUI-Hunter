@@ -109,8 +109,10 @@ local function ItemMacro(source, i)
         if oldIcon ~= icon or oldBody ~= body then EditMacro(index, name, icon, body) end
     else
         local account, character = GetNumMacros()
-        local perCharacter = character < (MAX_CHARACTER_MACROS or 18)
-        if not perCharacter and account >= (MAX_ACCOUNT_MACROS or 120) then error('Free a macro slot for the quest action bar.') end
+        -- Forever keeps the limits in Constants.MacroConsts (API audit 2026-10-06: 120 / 30).
+        local consts = Constants and Constants.MacroConsts or {}
+        local perCharacter = character < (consts.MAX_CHARACTER_MACROS or MAX_CHARACTER_MACROS or 18)
+        if not perCharacter and account >= (consts.MAX_ACCOUNT_MACROS or MAX_ACCOUNT_MACROS or 120) then error('Free a macro slot for the quest action bar.') end
         index = CreateMacro(name, icon, body, perCharacter)
     end
     return index
@@ -235,6 +237,12 @@ end
 -- what they did before, its macros leave bar 8 and RestedXP's own panel returns.
 function FHK.SetEllesmereQuestBarEnabled(on)
     local db = DB()
+    -- It creates macros and binds keys: part of the owner's Forever Hunter Keys setup, never a
+    -- published install's (publishing rule). Turning it off is always allowed.
+    if on and _G.ForeverHunterKeysNS == nil then
+        print('FHK: the guide quest bar is part of the Forever Hunter Keys setup; it is not available here.')
+        return false
+    end
     -- Refused cleanup must retain both the setting and FHK's key ownership.
     if not on then
         if InCombatLockdown() then print('FHK quest bar 8: leave combat to turn it off.'); return false end

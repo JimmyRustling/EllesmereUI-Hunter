@@ -72,7 +72,8 @@ function C.WeaponValue(info,slot,w)
             local learned=a and context.learned[tonumber(id)]
             if not learned then known=false
             elseif a.slot==slot then
-                if a.dagger and info.subclassID~=15 then return nil,false end
+                -- No dagger: the ability adds nothing (review GC8). nil here made every comparison unavailable.
+                if a.dagger and info.subclassID~=15 then return 0,false end
                 local damage=info.stats.Damage
                 if not S.Number(damage) then known=false
                 else score=score+damage*a.weapon*count/seconds*(w.DirectDPS or w.RangedDPS or w.MeleeDPS or w.DPS or 1) end

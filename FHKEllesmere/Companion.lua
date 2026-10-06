@@ -8,7 +8,7 @@ local hunter = select(2, UnitClass('player')) == 'HUNTER'
 local class = select(2, UnitClass('player'))
 local hud, range, combat, preview, db, cues
 local palette = {}
-local samples, samplesAt = {}, -1
+local samples, samplesGen = {}, 0
 local overlays = setmetatable({}, {__mode = 'k'})
 local fades = setmetatable({}, {__mode = 'k'})
 local rangedEquipType,throwPulseUntil
@@ -57,22 +57,27 @@ local function CleanTrue(value)
     return value == true or value == 1
 end
 
+-- Range readings are cached per unit (suite review SF-11): the target for 0.1 s, other
+-- plates for 0.3 s, longer than the 0.15 s sweep so a reading serves two sweeps. Entries are
+-- reused, so a sweep allocates no cache tables. Events that move range expire them all.
+local SAMPLE_TTL, TARGET_TTL = 0.3, 0.1
 local function SampleUnit(unit)
     unit = unit or 'target'
     if CleanTrue(UnitIsUnit(unit, 'target')) then unit = 'target' end
     local now = GetTime()
-    if now < samplesAt or now - samplesAt >= 0.1 then
-        for key in pairs(samples) do samples[key] = nil end
-        samplesAt = now
-    end
     local guid = UnitGUID and UnitGUID(unit)
     local public = not (issecretvalue and issecretvalue(guid))
     local hit = samples[unit]
-    if public and hit and hit.guid == guid then return hit.value end
+    local ttl = unit == 'target' and TARGET_TTL or SAMPLE_TTL
+    if public and hit and hit.guid == guid and hit.gen == samplesGen and now >= hit.at and now - hit.at < ttl then return hit.value end
     local value = FHK.GetEllesmereRange and FHK.GetEllesmereRange(unit) or FHK.GetUnitRange(unit)
-    if public then samples[unit] = {guid=guid, value=value} end
+    if public then
+        if not hit then hit = {}; samples[unit] = hit end
+        hit.guid, hit.value, hit.at, hit.gen = guid, value, now, samplesGen
+    end
     return value
 end
+FHK.EllesmereRangeSampleTTL = function() return SAMPLE_TTL, TARGET_TTL end
 FHK.GetEllesmereRangeSample = SampleUnit
 local function Sample() return SampleUnit('target') end
 
@@ -146,6 +151,8 @@ local function AnchorHUD()
     hud:ClearAllPoints()
     hud:SetPoint(db.point or 'CENTER', UIParent, db.relPoint or 'CENTER', db.x or 0, db.y or -125)
 end
+-- The HUD position is per profile (review C3): a profile switch moves it.
+FHK.AnchorEllesmereHUD = function() if hud then AnchorHUD() end end
 
 local function CreateHUD()
     hud = CreateFrame('Frame', 'FHKEllesmereHUD', UIParent)
@@ -284,10 +291,19 @@ FHK.UpdateEllesmereAttackCues = function(rangedActive, meleeActive, now)
     if not cues then return end
     if rangedActive~=nil then cues._rangedActive=CleanTrue(rangedActive) end
     if meleeActive~=nil then cues._meleeActive=CleanTrue(meleeActive) end
-    local shot=IsCurrentSpell and CleanTrue(IsCurrentSpell(75))
-    local shoot=IsCurrentSpell and CleanTrue(IsCurrentSpell(5019))
-    local throwing=IsCurrentSpell and CleanTrue(IsCurrentSpell(2764))
-    local repeating=IsAutoRepeatSpell and CleanTrue(IsAutoRepeatSpell())
+    -- C_Spell first (API audit 2026-10-06): the bare globals are retail-removed shims, and
+    -- C_Spell.IsAutoRepeatSpell needs a spell.
+    local current=C_Spell and C_Spell.IsCurrentSpell or IsCurrentSpell
+    local function Current(id) local ok,v=pcall(current,id);return ok and CleanTrue(v) end
+    local function Repeating(id)
+        local fn=C_Spell and C_Spell.IsAutoRepeatSpell
+        if type(fn)~='function' then return false end
+        local ok,v=pcall(fn,id);return ok and CleanTrue(v)
+    end
+    local shot=current and Current(75)
+    local shoot=current and Current(5019)
+    local throwing=current and Current(2764)
+    local repeating=Repeating(75) or Repeating(5019) or Repeating(2764)
     local pulsing=throwPulseUntil and throwPulseUntil>now
     rangedActive=not not (cues._rangedActive or shot or shoot or throwing or repeating or pulsing)
     -- /fhkautodebug: name the source when the ranged cue lights outside combat.
@@ -296,7 +312,7 @@ FHK.UpdateEllesmereAttackCues = function(rangedActive, meleeActive, now)
             tostring(cues._rangedActive),tostring(shot),tostring(shoot),tostring(throwing),tostring(repeating),tostring(pulsing)))
     end
     cues._debugOn=rangedActive
-    meleeActive=not not (cues._meleeActive or IsCurrentSpell and CleanTrue(IsCurrentSpell(6603)))
+    meleeActive=not not (cues._meleeActive or current and Current(6603))
     local label=(throwing or rangedEquipType=='INVTYPE_THROWN') and 'THROW' or shoot and 'SHOOT' or hunter and 'AUTO' or 'SHOOT'
     if cues._rangedLabel~=label then cues.cells[1].text:SetText(label);cues._rangedLabel=label end
     local settings=FHK.EllesmereIndicatorSettings and FHK.EllesmereIndicatorSettings('attacks')
@@ -373,7 +389,13 @@ function FHK.ApplyAttackCueSize()
     else cues:SetSize(vertical and size+12 or size*2+gap+6,vertical and size*2+gap+12 or size+12) end
     -- Switching layouts hands the cells to the other painter from a clean state.
     if cues._flank~=flank then
-        for _,cell in ipairs(cues.cells) do cell._fhkState,cell._fhkOn,cell._fhkOpacity=nil,nil,nil;cell.text:SetAlpha(1) end
+        for _,cell in ipairs(cues.cells) do
+            cell._fhkState,cell._fhkOn,cell._fhkOpacity=nil,nil,nil;cell.text:SetAlpha(1)
+            -- A fade or onset still running would keep writing alpha after the switch (review C9).
+            fades[cell]=nil
+            if cell._fhkOnset then cell._fhkOnset:Stop() end
+            if cell._fhkFadeOut then cell._fhkFadeOut:Stop() end
+        end
     end
     cues._flank=flank
     for i,cell in ipairs(cues.cells) do
@@ -458,26 +480,70 @@ local function ShootingColor(sample)
         warm[2] + (mint[2] - warm[2]) * t, warm[3] + (mint[3] - warm[3]) * t}
 end
 
+-- Range state -> the bracket a player configures (Range Indicator section).
+local BRACKET_OF={melee='melee',close='deadzone',shoot='shoot',far='far',out='out',beyond='out',distance='unknown',unknown='unknown'}
 local function RangeAppearance(sample)
     if not hunter then
         local c=sample.state=='melee' and palette.melee or
             (sample.state=='out' or sample.state=='far' or sample.state=='beyond') and palette.out or
             sample.state=='unknown' and palette.unknown or
             sample.distance and sample.distance>=.8*(sample.maximum or 40) and palette.warning or palette.shoot
-        return c,sample.state=='melee' and 'Melee' or ''
+        -- Other classes: in range reads as Shooting for the brackets.
+        local bracket=sample.state=='distance' and sample.distance and 'shoot' or BRACKET_OF[sample.state] or 'unknown'
+        return c,sample.state=='melee' and 'Melee' or '',bracket
     end
     local low, high = sample.bracket:match('^([%d%.]+)' .. DASH .. '([%d%.]+) yd$')
     local boundary = sample.state == 'distance' and tonumber(low) and tonumber(low) >= 5 and
         tonumber(low) < sample.minimum and tonumber(high) > sample.minimum
     local c = sample.state == 'shoot' and ShootingColor(sample) or
         palette[boundary and 'boundary' or sample.state] or palette.unknown
-    return c, sample.state == 'close' and 'DEADZONE' or boundary and 'DEADZONE?' or sample.title
+    return c, sample.state == 'close' and 'DEADZONE' or boundary and 'DEADZONE?' or sample.title,
+        boundary and 'deadzone' or BRACKET_OF[sample.state] or 'unknown'
 end
+local function BracketSettings(key)
+    return FHK.EllesmereRangeBracket and FHK.EllesmereRangeBracket(key) or nil
+end
+-- Whether the centre indicator shows for this sample (per-bracket Show In ...).
+local function BracketShown(sample)
+    local _, _, key = RangeAppearance(sample)
+    local b = BracketSettings(key)
+    return not b or b.show ~= false
+end
+FHK.EllesmereRangeBracketShown = BracketShown
+-- Entering a bracket: one pulse and one sound, never on a target change or a repaint.
+local lastBracket, lastBracketGuid
+local function EnterBracket(key, b)
+    local guid = UnitGUID and UnitGUID('target')
+    if issecretvalue and issecretvalue(guid) then guid = nil end
+    local entering = lastBracket ~= nil and lastBracket ~= key and guid ~= nil and guid == lastBracketGuid
+    lastBracket, lastBracketGuid = key, guid
+    if not entering or not b then return end
+    if b.pulse and range:IsShown() and not (FHK.EllesmereReduceMotion and FHK.EllesmereReduceMotion()) then
+        if not range.fhkPulse and range.CreateAnimationGroup then
+            local g = range:CreateAnimationGroup()
+            local down = g:CreateAnimation('Alpha'); down:SetFromAlpha(1); down:SetToAlpha(.25); down:SetDuration(.15); down:SetOrder(1)
+            local up = g:CreateAnimation('Alpha'); up:SetFromAlpha(.25); up:SetToAlpha(1); up:SetDuration(.25); up:SetOrder(2)
+            range.fhkPulse = g
+        end
+        if range.fhkPulse then range.fhkPulse:Stop(); range.fhkPulse:Play() end
+    end
+    if b.sound and b.sound ~= 'none' and FHK.PlayEllesmereCueSound then FHK.PlayEllesmereCueSound(b.sound, 'bracket') end
+end
+FHK.EllesmereRangeBracketReset = function() lastBracket, lastBracketGuid = nil, nil end
 
-local function PaintRange(sample)
-    local c, label = RangeAppearance(sample)
+local function PaintRange(sample, live)
+    local c, label, key = RangeAppearance(sample)
+    local b = BracketSettings(key)
+    local yards = FHK.EllesmereDistanceText(sample.bracket ~= '' and sample.bracket or '? yd')
+    if b then
+        if b.label ~= '' then label = b.label end
+        if b.content == 'label' then yards = ''
+        elseif b.content == 'yards' then label = ''
+        elseif b.content == 'none' then label, yards = '', '' end
+        if live then EnterBracket(key, b) end
+    end
     range.left:SetText(label)
-    range.right:SetText(FHK.EllesmereDistanceText(sample.bracket ~= '' and sample.bracket or '? yd'))
+    range.right:SetText(yards)
     range.left:SetTextColor(unpack(c)); range.right:SetTextColor(unpack(c))
     local settings=FHK.EllesmereIndicatorSettings and FHK.EllesmereIndicatorSettings('range')
     local custom=settings and settings.colourMode=='custom' and settings.colour
@@ -532,8 +598,10 @@ local function PlateOverlay(plate)
         f.baseNameColor = {plate.name:GetTextColor()}
         hooksecurefunc(plate.name, 'SetTextColor', function(self, r, g, b, a)
             if f.settingName then return end
-            f.baseNameColor = {r, g, b, a or 1}
-            if f.nameColor then
+            local base = f.baseNameColor
+            base[1], base[2], base[3], base[4] = r, g, b, a or 1
+            -- Ellesmere's threat Name colour owns the name while it is on (suite review SF-5).
+            if f.nameColor and not plate._threatNameOn then
                 f.settingName = true; self:SetTextColor(unpack(f.nameColor)); f.settingName = nil
             end
         end)
@@ -542,14 +610,25 @@ local function PlateOverlay(plate)
     return f
 end
 
+-- Written on change only (suite review SF-5); Ellesmere's own threat Name colour wins.
 local function PaintPlateName(plate, f, color)
-    f.nameColor = color
-    if not plate.name then return end
-    if FHK.ApplyEllesmereCueText then FHK.ApplyEllesmereCueText(plate.name,'world') end
-    local c = color or f.baseNameColor
-    if c and #c >= 3 then
-        f.settingName = true; plate.name:SetTextColor(unpack(c)); f.settingName = nil
+    if plate._threatNameOn then color = nil end
+    local name = plate.name
+    -- Font treatment is change-gated inside; the colour below is written on change only.
+    if name and FHK.ApplyEllesmereCueText then FHK.ApplyEllesmereCueText(name,'world') end
+    if color == nil then
+        f.nameColor = nil
+        if f.nameApplied == nil or not name then f.nameApplied = nil; return end
+        -- Hand back Ellesmere's colour only when we had painted over it.
+        f.nameApplied = nil
+        local c = f.baseNameColor
+        if c and #c >= 3 then f.settingName = true; name:SetTextColor(unpack(c)); f.settingName = nil end
+        return
     end
+    f.nameColor = color
+    if not name or f.nameApplied == color and f.nameR == color[1] and f.nameG == color[2] and f.nameB == color[3] then return end
+    f.settingName = true; name:SetTextColor(unpack(color)); f.settingName = nil
+    f.nameApplied, f.nameR, f.nameG, f.nameB = color, color[1], color[2], color[3]
 end
 
 local lootCursorProbe, lootCursorReferences
@@ -671,84 +750,128 @@ local function ReactionColour(unit)
     local C = FHK.Colours or {}
     return C.happy or {.30, .85, .30}                 -- friendly: WoW green
 end
-local function UpdatePlates(sample)
+-- One plate: range, opacity, loot, glow, name and range text, then the unit-frame
+-- refinements for the same plate (suite review SF-11: one shared plate pass).
+local targetPlate
+local function UpdatePlate(ns, plate, sample, dark)
+    local unit = plate.unit
+    local f = PlateOverlay(plate)
+    if not f then return end
+    -- One combat glyph (player frame): the engaged mark repeats what the gold
+    -- aggro edge and the plate's own state say. Opt back in with Extra Combat Icons.
+    local engaged = db.extraCombatIcons == true and unit and UnitAffectingCombat(unit)
+    f.icon:SetShown(CleanTrue(engaged) and not CleanTrue(UnitIsDead(unit)))
+    if FHK.ApplyEllesmereIconEdge then FHK.ApplyEllesmereIconEdge(f.icon) end
+    local lootColor, lootText, lootAlpha, lootIcon = LootAppearance(unit)
+    f.loot:SetShown(lootColor ~= nil)
+    if not lootColor and FHK.ResetEllesmereCueAlpha then FHK.ResetEllesmereCueAlpha(f.loot) end
+    local enemy = unit and CleanTrue(UnitExists(unit)) and CleanTrue(UnitCanAttack('player', unit)) and
+        not CleanTrue(UnitIsDead(unit))
+    local selected = unit and CleanTrue(UnitIsUnit(unit, 'target'))
+    if selected then targetPlate = plate end
+    local reading = enemy and (selected and sample or SampleUnit(unit))
+    if FHK.ApplyEllesmereNameplateOpacity then FHK.ApplyEllesmereNameplateOpacity(plate,reading) end
+    local showGlow = enemy and reading and reading.state ~= 'unknown'
+    -- Dark mode: every enemy plate carries its range strip (player request).
+    local mark = showGlow and (dark or not selected and db.nonTargetRange ~= false)
+    if FHK.SetEllesmereRangeMarkShown then FHK.SetEllesmereRangeMarkShown(plate, f, mark)
+    else f.rangeStrip:SetShown(mark) end
+    local native = not dark and db.targetRangeGlow ~= false and showGlow and selected and plate.glowFrame and plate.glowFrame:IsShown() and plate.glowTextures
+    if dark and selected and plate.glowTextures then
+        -- On black the target glow overpowers everything: a faint light edge instead.
+        for _, tex in ipairs(plate.glowTextures) do tex:SetVertexColor(1, 1, 1, .3) end
+        f.tintedGlow = plate.glowTextures
+    elseif not native then RestorePlateGlow(f, ns) end
+    local rangeText = db.nameplateRangeText ~= false and not dark
+    -- Selected plates use only EUI's original glow, never our fallback.
+    f.text:SetShown(lootColor ~= nil or enemy and reading and rangeText)
+    if enemy and reading then
+        local c, label = RangeAppearance(reading)
+        PaintPlateName(plate, f, dark and ReactionColour(unit) or db.rangeNameColors ~= false and c or nil)
+        if FHK.PaintEllesmereRangeStripe then FHK.PaintEllesmereRangeStripe(plate,f,c)
+        else f.rangeStrip:SetVertexColor(c[1],c[2],c[3],.7) end
+        if native then
+            for _, tex in ipairs(native) do tex:SetVertexColor(c[1], c[2], c[3], 0.7) end
+            f.tintedGlow = native
+        end
+        -- Text strings are rebuilt only when the reading changes (no garbage per sweep).
+        if f.textBracket ~= reading.bracket or f.textLabel ~= label then
+            f.textBracket, f.textLabel = reading.bracket, label
+            f.textValue = FHK.EllesmereDistanceText((label == 'DEADZONE' or label == 'DEADZONE?') and
+                (reading.bracket .. ' ' .. DOT .. ' ' .. label) or (reading.bracket ~= '' and reading.bracket or '? yd'))
+            f.textDistance = FHK.EllesmereDistanceText(reading.bracket)
+        end
+        f.text:SetText(f.textValue)
+        if FHK.PaintEllesmereRangeText then
+            -- RangeIntegration places and colours the text with the player's offsets (SF-9).
+            -- Dark mode: the strip carries range, so the text stays off.
+            local assigned=FHK.PaintEllesmereRangeText(plate,f,f.textDistance,label,c,rangeText)
+            f.text:SetShown(not assigned and rangeText)
+        else
+            f.text:SetTextColor(unpack(c))
+            f.text:ClearAllPoints()
+            local anchor = plate.cast and plate.cast:IsShown() and plate.cast or plate.health
+            f.text:SetPoint('TOP', anchor, 'BOTTOM', 0, -5)
+        end
+    elseif lootColor then
+        if FHK.PaintEllesmereRangeText then FHK.PaintEllesmereRangeText(plate,f,'','',palette.unknown,false) end
+        PaintPlateName(plate, f, nil)
+        f.loot:SetTexture(lootIcon)
+        if FHK.SetEllesmereCueAlpha then
+            f.loot:SetVertexColor(lootColor[1],lootColor[2],lootColor[3],1)
+            FHK.SetEllesmereCueAlpha(f.loot,unit,lootAlpha)
+        else f.loot:SetVertexColor(lootColor[1],lootColor[2],lootColor[3],lootAlpha) end
+        if FHK.ApplyEllesmereIconEdge then FHK.ApplyEllesmereIconEdge(f.loot) end
+        f.text:SetText(lootText); f.text:SetTextColor(unpack(lootColor))
+        -- Loot text sits under the bar; the range text re-places itself when it returns.
+        if f._fhkTextAnchor ~= 'loot' then
+            f.text:ClearAllPoints(); f.text:SetPoint('TOP', plate.health, 'BOTTOM', 0, -5)
+            f._fhkTextAnchor = 'loot'
+        end
+    else
+        if FHK.PaintEllesmereRangeText then FHK.PaintEllesmereRangeText(plate,f,'','',palette.unknown,false) end
+        PaintPlateName(plate,f,nil)
+    end
+    if FHK.PositionEllesmereRarityBadge then FHK.PositionEllesmereRarityBadge(plate) end
+    if FHK.PaintEllesmerePlateRefinements then FHK.PaintEllesmerePlateRefinements(plate) end
+end
+-- Sweeps visit the target plate and a few others in turn, as Ellesmere's own range fade
+-- does (8 plates a tick); events and settings changes repaint every plate.
+local PLATE_BUDGET = 8
+local plateQueue, plateIndex = {}, 1
+FHK.EllesmerePlateBudget = function() return PLATE_BUDGET end
+local function UpdatePlates(sample, budget)
     local ns = _G.EllesmereNameplates_NS
     if not ns or not ns.plates then return end
     local dark = FHK.EllesmereDarkMode and FHK.EllesmereDarkMode() or false
-    for _, plate in pairs(ns.plates) do
-        local unit = plate.unit
-        local f = PlateOverlay(plate)
-        if f then
-            -- One combat glyph (player frame): the engaged mark repeats what the gold
-            -- aggro edge and the plate's own state say. Opt back in with Extra Combat Icons.
-            local engaged = db.extraCombatIcons == true and unit and UnitAffectingCombat(unit)
-            f.icon:SetShown(CleanTrue(engaged) and not CleanTrue(UnitIsDead(unit)))
-            if FHK.ApplyEllesmereIconEdge then FHK.ApplyEllesmereIconEdge(f.icon) end
-            local lootColor, lootText, lootAlpha, lootIcon = LootAppearance(unit)
-            f.loot:SetShown(lootColor ~= nil)
-            if not lootColor and FHK.ResetEllesmereCueAlpha then FHK.ResetEllesmereCueAlpha(f.loot) end
-            local enemy = unit and CleanTrue(UnitExists(unit)) and CleanTrue(UnitCanAttack('player', unit)) and
-                not CleanTrue(UnitIsDead(unit))
-            local reading = enemy and (CleanTrue(UnitIsUnit(unit, 'target')) and sample or SampleUnit(unit))
-            if FHK.ApplyEllesmereNameplateOpacity then FHK.ApplyEllesmereNameplateOpacity(plate,reading) end
-            local showGlow = enemy and reading and reading.state ~= 'unknown'
-            local selected = unit and CleanTrue(UnitIsUnit(unit, 'target'))
-            -- Dark mode: every enemy plate carries its range strip (player request).
-            local mark = showGlow and (dark or not selected and db.nonTargetRange ~= false)
-            if FHK.SetEllesmereRangeMarkShown then FHK.SetEllesmereRangeMarkShown(plate, f, mark)
-            else f.rangeStrip:SetShown(mark) end
-            local native = not dark and db.targetRangeGlow ~= false and showGlow and selected and plate.glowFrame and plate.glowFrame:IsShown() and plate.glowTextures
-            if dark and selected and plate.glowTextures then
-                -- On black the target glow overpowers everything: a faint light edge instead.
-                for _, tex in ipairs(plate.glowTextures) do tex:SetVertexColor(1, 1, 1, .3) end
-                f.tintedGlow = plate.glowTextures
-            elseif not native then RestorePlateGlow(f, ns) end
-            local rangeText = db.nameplateRangeText ~= false and not dark
-            -- Selected plates use only EUI's original glow, never our fallback.
-            f.text:SetShown(lootColor ~= nil or enemy and reading and rangeText)
-            if enemy and reading then
-                local c, label = RangeAppearance(reading)
-                PaintPlateName(plate, f, dark and ReactionColour(unit) or db.rangeNameColors ~= false and c or nil)
-                if FHK.PaintEllesmereRangeStripe then FHK.PaintEllesmereRangeStripe(plate,f,c)
-                else f.rangeStrip:SetVertexColor(c[1],c[2],c[3],.7) end
-                if native then
-                    for _, tex in ipairs(native) do tex:SetVertexColor(c[1], c[2], c[3], 0.7) end
-                    f.tintedGlow = native
-                end
-                f.text:SetTextColor(unpack(c))
-                f.text:SetText(FHK.EllesmereDistanceText((label == 'DEADZONE' or label == 'DEADZONE?') and
-                    (reading.bracket .. ' ' .. DOT .. ' ' .. label) or (reading.bracket ~= '' and reading.bracket or '? yd')))
-                f.text:ClearAllPoints()
-                local anchor = plate.cast and plate.cast:IsShown() and plate.cast or plate.health
-                f.text:SetPoint('TOP', anchor, 'BOTTOM', 0, -5)
-                if FHK.PaintEllesmereRangeText then
-                    -- Dark mode: the strip carries range, so the text stays off.
-                    local assigned=FHK.PaintEllesmereRangeText(plate,f,FHK.EllesmereDistanceText(reading.bracket),label,c,rangeText)
-                    f.text:SetShown(not assigned and rangeText)
-                end
-            elseif lootColor then
-                if FHK.PaintEllesmereRangeText then FHK.PaintEllesmereRangeText(plate,f,'','',palette.unknown,false) end
-                PaintPlateName(plate, f, nil)
-                f.loot:SetTexture(lootIcon)
-                if FHK.SetEllesmereCueAlpha then
-                    f.loot:SetVertexColor(lootColor[1],lootColor[2],lootColor[3],1)
-                    FHK.SetEllesmereCueAlpha(f.loot,unit,lootAlpha)
-                else f.loot:SetVertexColor(lootColor[1],lootColor[2],lootColor[3],lootAlpha) end
-                if FHK.ApplyEllesmereIconEdge then FHK.ApplyEllesmereIconEdge(f.loot) end
-                f.text:SetText(lootText); f.text:SetTextColor(unpack(lootColor))
-                f.text:ClearAllPoints(); f.text:SetPoint('TOP', plate.health, 'BOTTOM', 0, -5)
-            else
-                if FHK.PaintEllesmereRangeText then FHK.PaintEllesmereRangeText(plate,f,'','',palette.unknown,false) end
-                PaintPlateName(plate,f,nil)
+    FHK.EllesmerePlatePasses = (FHK.EllesmerePlatePasses or 0) + 1
+    if not budget then
+        targetPlate = nil
+        for _, plate in pairs(ns.plates) do UpdatePlate(ns, plate, sample, dark) end
+    else
+        local current = targetPlate
+        if current and current.unit and ns.plates[current.unit] == current then UpdatePlate(ns, current, sample, dark) end
+        if plateIndex > #plateQueue then
+            for i = #plateQueue, 1, -1 do plateQueue[i] = nil end
+            for _, plate in pairs(ns.plates) do plateQueue[#plateQueue + 1] = plate end
+            plateIndex = 1
+        end
+        while budget > 0 and plateIndex <= #plateQueue do
+            local plate = plateQueue[plateIndex]
+            plateIndex = plateIndex + 1
+            -- Plates released since the queue was taken are skipped.
+            if plate ~= current and plate.unit and ns.plates[plate.unit] == plate then
+                UpdatePlate(ns, plate, sample, dark); budget = budget - 1
             end
-            if FHK.PositionEllesmereRarityBadge then FHK.PositionEllesmereRarityBadge(plate) end
         end
     end
     -- A recycled plate may have been removed from ns.plates before this tick.
     for plate, f in pairs(overlays) do
         if not plate.unit or ns.plates[plate.unit] ~= plate then
-            RestorePlateGlow(f, ns); PaintPlateName(plate, f, nil); f:Hide()
-        else f:Show() end
+            if not f.released then
+                RestorePlateGlow(f, ns); PaintPlateName(plate, f, nil); f:Hide(); f.released = true
+            end
+        elseif f.released or not f:IsShown() then f.released = nil; f:Show() end
     end
 end
 
@@ -768,7 +891,7 @@ local function ChatSettings()
     -- a delay the player set in the native Chat options is left alone.
     if (rawget(db, 'chatFadeVersion') or 1) < 2 then
         rawset(db, 'chatFadeVersion', 2)
-        if cfg.idleFadeDelay == 10 then
+        if db.chatConfigured and cfg.idleFadeDelay == 10 then
             cfg.idleFadeDelay = CHAT_FADE_DELAY
             if chat.ResetIdleTimer then chat.ResetIdleTimer() end
         end
@@ -901,6 +1024,9 @@ FHK.MigrateEllesmereNeutralFill = MigrateNeutralFill
 local function RefineNativeIndicators()
     if db.refinementVersion == 5 then return end
     if type(db.refinementVersion) == 'number' and db.refinementVersion >= 2 then MigrateNeutralFill(); db.refinementVersion = 5; return end
+    -- Publishing rule (review R1): turning Ellesmere's own range texts off and recolouring
+    -- neutral units is the owner's setup; a published install keeps Ellesmere as configured.
+    if _G.ForeverHunterKeysNS == nil then db.refinementVersion = 5; return end
     db.targetDistanceBefore = EllesmereUIDB and EllesmereUIDB.targetDistanceEnabled
     if EllesmereUIDB then EllesmereUIDB.targetDistanceEnabled = false end
     if EUI._applyTargetDistance then EUI._applyTargetDistance() end
@@ -967,7 +1093,8 @@ local function InstallRangeAdapters()
             if unit == 'target' then
                 local s = Sample()
                 if not cutoff or cutoff == s.maximum then
-                    if s.state == 'close' or s.state == 'far' then return true end
+                    -- The same set as the plate sweep below (review C4).
+                    if s.state == 'close' or s.state == 'far' or s.state == 'out' or s.state == 'beyond' then return true end
                     if s.state == 'shoot' or s.state == 'melee' then return false end
                     return nil
                 end
@@ -1102,8 +1229,12 @@ function FHK.SyncEllesmereFacingCue()
             Tick()
         end)
     end
-    for _,event in ipairs({'UI_ERROR_MESSAGE','UNIT_SPELLCAST_SUCCEEDED','PLAYER_TARGET_CHANGED','PLAYER_ENTERING_WORLD'}) do
+    for _,event in ipairs({'UI_ERROR_MESSAGE','PLAYER_TARGET_CHANGED','PLAYER_ENTERING_WORLD'}) do
         facing.events:RegisterEvent(event)
+    end
+    -- Player casts only (review C11): every nearby unit's cast is wasted work in crowds.
+    for _,event in ipairs({'UNIT_SPELLCAST_SUCCEEDED'}) do
+        if facing.events.RegisterUnitEvent then facing.events:RegisterUnitEvent(event,'player') else facing.events:RegisterEvent(event) end
     end
 end
 -- Diagnostic only: public coordinates do not establish spell-specific facing rules.
@@ -1146,19 +1277,19 @@ function FHK.SetEllesmerePreviewScenario(name)
 end
 FHK.EllesmerePreviewScenarios = SCENARIOS
 
-Tick = function()
+Tick = function(budget)
     if not db then return end
     local s = Sample()
     if hud then
         local target = CleanTrue(UnitExists('target')) and CleanTrue(UnitCanAttack('player', 'target')) and not CleanTrue(UnitIsDead('target'))
         local settings=FHK.EllesmereIndicatorSettings and FHK.EllesmereIndicatorSettings('range')
-        FHK.FadeEllesmere(range,(not settings or settings.enabled~=false) and (preview or scenario or EUI._unlockActive or target))
+        FHK.FadeEllesmere(range,(not settings or settings.enabled~=false) and (preview or scenario or EUI._unlockActive or target and BracketShown(s)))
         FHK.FadeEllesmere(combat, db.extraCombatIcons == true and (preview or CleanTrue(UnitAffectingCombat('player'))))
         if scenario then PaintRange(SCENARIOS[scenario])
         elseif (preview or EUI._unlockActive) and not target then
             PaintRange(hunter and {state='close',title='Deadzone',bracket='5' .. DASH .. '8 yd',minimum=8,maximum=35} or
                 {state='distance',title='Distance',bracket='5' .. DASH .. '10 yd',minimum=0,maximum=40,distance=7})
-        elseif target then PaintRange(s) end
+        elseif target then PaintRange(s, true) end
         if target and FacingEnabled() and facing.untilTime>GetTime() then
             range.left:SetText(facing.label or 'FACE TARGET');range.left:Show()
             range.left:SetTextColor(unpack(palette.close))
@@ -1168,7 +1299,7 @@ Tick = function()
             if settings.orientation=='block' then range.right:Hide() end
         end
     end
-    UpdatePlates(s)
+    UpdatePlates(s, budget)
     UpdateFrameMarks(s)
     if FHK.UpdateEllesmereMarkerFades then FHK.UpdateEllesmereMarkerFades() end
     FHK.UpdateEllesmereAttackCues(nil,nil,GetTime())
@@ -1250,6 +1381,7 @@ driver:RegisterEvent('PLAYER_REGEN_ENABLED')
 driver:RegisterEvent('SPELLS_CHANGED')
 driver:RegisterEvent('PLAYER_EQUIPMENT_CHANGED');driver:RegisterEvent('PLAYER_SWING')
 driver:RegisterEvent('START_AUTOREPEAT_SPELL');driver:RegisterEvent('STOP_AUTOREPEAT_SPELL')
+local eventTickAt, eventDirty = nil, false
 driver:SetScript('OnEvent', function(_, event,duration,swingType)
     if event=='PLAYER_EQUIPMENT_CHANGED' then RangedEquipment()
     elseif event=='START_AUTOREPEAT_SPELL' and cues then cues._rangedActive=true
@@ -1258,19 +1390,34 @@ driver:SetScript('OnEvent', function(_, event,duration,swingType)
         not (issecretvalue and issecretvalue(swingType)) and swingType==(Enum.PlayerSwingType.Ranged or 2) then
         throwPulseUntil=GetTime()+.75
     end
-    for key in pairs(samples) do samples[key] = nil end
-    samplesAt = -1
-    if event == 'PLAYER_LOGIN' then C_Timer.After(0, Initialize) else Tick() end
+    -- Swing, auto-repeat and plate add/remove events change no range (review C2, SF-11):
+    -- keep the samples; a reused plate token is told apart by its GUID.
+    local quiet = event == 'PLAYER_SWING' or event == 'START_AUTOREPEAT_SPELL' or event == 'STOP_AUTOREPEAT_SPELL'
+    if not quiet and event ~= 'NAME_PLATE_UNIT_ADDED' and event ~= 'NAME_PLATE_UNIT_REMOVED' then
+        -- Expire every cached reading without dropping the reused entries.
+        samplesGen = samplesGen + 1
+    end
+    if event == 'PLAYER_LOGIN' then C_Timer.After(0, Initialize); return end
+    -- A pull adds a dozen plates in one frame (review C2): one sweep now, the rest on the next frame.
+    if event == 'NAME_PLATE_UNIT_ADDED' or event == 'NAME_PLATE_UNIT_REMOVED' then
+        local now = GetTime()
+        if eventTickAt == now then eventDirty = true; return end
+        eventTickAt = now
+    end
+    -- A swing moves no plate: the centre indicator repaints, plates keep their turn.
+    Tick(quiet and FHK.EllesmerePlateBudget and FHK.EllesmerePlateBudget() or nil)
 end)
 local elapsed = 0
 driver:SetScript('OnUpdate', function(_, dt)
     StepFades(dt)
+    if eventDirty then eventDirty = false; Tick() end
     elapsed = elapsed + dt
     -- Range and corpse cues only move while something is live (audit F35).
     local interval = (preview or scenario or not FHK.EllesmereSweepInterval) and 0.15 or FHK.EllesmereSweepInterval()
     if elapsed < interval then return end
     elapsed = 0
-    Tick()
+    -- Sweeps visit a few plates per tick (SF-11); event ticks above repaint them all.
+    Tick(FHK.EllesmerePlateBudget and FHK.EllesmerePlateBudget() or nil)
 end)
 
 -- /fhkperf: the game's own addon profiler, ranked (player report: FPS dropped).

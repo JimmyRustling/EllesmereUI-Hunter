@@ -2,9 +2,9 @@
 ## Title: FHK - Ellesmere Companion
 ## Notes: Hunter deadzone, combat markers, modern swing bars and native chat fading.
 ## Author: Codex
-## Version: 1.9.3
+## Version: 1.9.5
 ## Dependencies: EllesmereUI
-## OptionalDeps: ForeverHunterKeys, EllesmereUIActionBars, EllesmereUIChat, EllesmereUINameplates, EllesmereUIQoL, EllesmereUIUnitFrames, EllesmereUIBlizzardSkin, EllesmereUIBags, EllesmereUIResourceBars, RXPGuides, AutoGear
+## OptionalDeps: ForeverHunterKeys, EllesmereUIActionBars, EllesmereUIChat, EllesmereUINameplates, EllesmereUIQoL, EllesmereUIUnitFrames, EllesmereUIBlizzardSkin, EllesmereUIBags, EllesmereUIResourceBars, EllesmereUICooldownManager, EllesmereUIRaidFrames, RXPGuides, AutoGear
 ## SavedVariablesPerCharacter: FHKEllesmereDB
 Bootstrap.lua
 Profiles.lua
@@ -23,6 +23,9 @@ ModernChrome.lua
 UnitRefinements.lua
 PetElements.lua
 PetFood.lua
+AmmoBuy.lua
+Restock.lua
+SummonBar.lua
 ResourceRefinements.lua
 QuestBar.lua
 SwingCursor.lua
@@ -33,6 +36,14 @@ HunterPolish.lua
 Warnings.lua
 HunterCues.lua
 LevelingQoL.lua
+AutoTrain.lua
+TalentPlanner.lua
+ClassBuffs.lua
+WeaponEnchants.lua
+ClassStock.lua
+ClassCues.lua
+ClassTrainingData.lua
+RankNotifier.lua
 CdmLabels.lua
 XPBarRefinements.lua
 ActionPressFeedback.lua

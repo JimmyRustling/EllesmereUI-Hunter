@@ -47,6 +47,21 @@ Tick each one, or note what you saw.
 | 20 | XP Bar: XP Number Format: Ellesmere / Full / Rounded | 17.6K / 17,600 / 18K in the XP text |
 | 21 | With Forever Hunter Keys disabled: Action Bars and General pages | No Hunter Keyboard Layout, Reviewed Hunter Cues or Combat Layout; Key Labels And Menu shows instead |
 
+## Adversarial review fixes (2026-10-06, see `ADVERSARIAL_REVIEW_2026-10-06.md`)
+
+| # | Do | Expect |
+|---|---|---|
+| 22 | Gear Auto-Equip on: swap a worn item for a worse one by hand (or equip a fishing pole) | It stays on, with one chat line saying the slot is left as you set it until your next level |
+| 23 | Gear bag icons on: open different bags one after another (Ellesmere bags, then Blizzard's with Ellesmere Bags disabled), grid and list view | Green marks only on the upgrades, never on the item that took a recycled slot |
+| 24 | Swing timer: turn Auto Shot off and let the bar finish; then change any Resource Bars option | AUTO SHOT READY stays a full bar both times |
+| 25 | Sniper Shot talent: proc it, stand at 36-45 yd, shoot | The range cue says Shooting, never "Out of range · 45+" or "Range unavailable" |
+| 26 | Pet Target on: send the pet at a mob | The pet-target bar's health drops during the fight |
+| 27 | Feed Pet with Ellesmere bags in list view and a category tab open; then with the gamepad interface | List: one Pet Food section from every bag. Gamepad: the Pet Food row instead |
+| 28 | Theme: apply Colored, change a class colour in Ellesmere, switch to Dark; then Restore Original Look | Your colour is kept in Dark; Restore returns the original exactly |
+| 29 | Two Ellesmere profiles with the companion HUD in different places: switch between them | The HUD and standalone swing bars move with the profile, no /reload |
+| 30 | `/fhktalents` on a Hunter with Predator's Edge or Lacerating Strikes | They read as learned; Aspect Auto style can advise Beast in melee |
+| 31 | Gear Auto-Equip Bags on: loot a bigger bag | It goes into the bag slot once (no retry every minute) |
+
 ## Still owed from earlier lists (unchanged)
 
 - **Gear:** disable AutoGear, run `/fhkgear hunter`, paste the report (FHKGear `AUDIT_STATUS_2026-10-04.md` §6).

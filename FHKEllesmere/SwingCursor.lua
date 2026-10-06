@@ -17,14 +17,30 @@ local RING_GAP = 1.5
 local function PublicNumber(v)
     return not (issecretvalue and issecretvalue(v)) and type(v)=='number' and v==v and v>-math.huge and v<math.huge
 end
+local MODES = {ranged=true, melee=true, combined=true, separate=true}
+-- Saved on/off keys and the value a damaged entry falls back to; OPTIONAL keys read ~=false.
+local FLAGS = {enabled=false, matchGCD=true, combatOnly=false, readinessColors=true, showMeleeReady=true,
+    showRangedReady=false, avoidCast=true}
+local OPTIONAL = {'avoidGCD', 'showRetry', 'resetOnMelee'}
 local function Settings()
     if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     FHKEllesmereDB.swingCursor = FHKEllesmereDB.swingCursor or {
         enabled=false, mode='ranged', matchGCD=true, radius=27, ringTex='light', alpha=80, combatOnly=false,
         readinessColors=true, showMeleeReady=true, showRangedReady=false, combinedRings='two',
     }
+    if type(FHKEllesmereDB.swingCursor)~='table' then FHKEllesmereDB.swingCursor = nil; return Settings() end
     local cfg = FHKEllesmereDB.swingCursor
     if cfg.mode == 'both' then cfg.mode = 'combined' end
+    -- Damaged saved values (a hand edit, an old version) fall back to their defaults.
+    if not MODES[cfg.mode] then cfg.mode = 'ranged' end
+    for key, default in pairs(FLAGS) do
+        if cfg[key] ~= nil and type(cfg[key]) ~= 'boolean' then cfg[key] = default end
+    end
+    for _, key in ipairs(OPTIONAL) do if type(cfg[key]) ~= 'boolean' then cfg[key] = nil end end
+    if cfg.radius ~= nil and not PublicNumber(cfg.radius) then cfg.radius = 27 end
+    if cfg.alpha ~= nil and not PublicNumber(cfg.alpha) then cfg.alpha = 80 end
+    if cfg.ringTex ~= nil and not textures[cfg.ringTex] then cfg.ringTex = 'light' end
+    if cfg.combinedRings ~= 'one' and cfg.combinedRings ~= 'two' then cfg.combinedRings = nil end
     if cfg.readinessColors == nil then cfg.readinessColors = true end
     if cfg.showMeleeReady == nil then cfg.showMeleeReady = true end
     if cfg.showRangedReady == nil then cfg.showRangedReady = false end
@@ -33,7 +49,7 @@ local function Settings()
     return cfg
 end
 local anchor, lastX, lastY
-local function Position(x, y)
+local function Position(x, y, force)
     if not root or not root:IsShown() then return end
     local cursor = _G.EllesmereUICursorFrame
     local gcd = _G._ECL_AceDB and _G._ECL_AceDB.profile and _G._ECL_AceDB.profile.gcd
@@ -47,8 +63,10 @@ local function Position(x, y)
         if native.GetCenter then lastX, lastY = native:GetCenter() end
         return
     end
+    -- Mouselook freezes the cursor sample; a ring that appears during it still takes that
+    -- frozen point once (review S4) instead of where the last swing ended.
     local looking=IsMouselooking and IsMouselooking()
-    if not (issecretvalue and issecretvalue(looking)) and looking==true then return end
+    if not force and not (issecretvalue and issecretvalue(looking)) and looking==true then return end
     -- Offsets are in the anchor's coordinate system, not the ring's own scale.
     local scale = UIParent:GetEffectiveScale()
     if not PublicNumber(x) or not PublicNumber(y) or not PublicNumber(scale) or scale<=0 then return end
@@ -67,7 +85,8 @@ local function SyncSwingFollow(x,y)
     if mouse and mouse.Get and mouse.SubscribeFrame and mouse.UnsubscribeFrame then
         root:SetScript('OnUpdate',nil)
         if not swingFollow then
-            Position(mouse.Get())
+            local mx,my=mouse.Get()
+            Position(mx,my,true)
             mouse.SubscribeFrame('fhkSwingCursorFollow',Position,true)
             swingFollow=true
         else
@@ -122,7 +141,9 @@ local function Refresh(x,y)
     if not root then Create() end
     if EUI._unlockActive or cfg.combatOnly and not UnitAffectingCombat('player') then root:Hide();StopSwingFollow();return end
     local gcd = _G._ECL_AceDB and _G._ECL_AceDB.profile and _G._ECL_AceDB.profile.gcd or {}
-    root:SetScale(cfg.matchGCD and (gcd.scale or 100) / 100 or 1)
+    -- Scale and the retry anchor change rarely: set them only on change (review S7, 20 ticks a second).
+    local scale = cfg.matchGCD and (gcd.scale or 100) / 100 or 1
+    if root._fhkScale ~= scale then root:SetScale(scale); root._fhkScale = scale end
     local texture = cfg.matchGCD and gcd.ringTex or cfg.ringTex
     texture = textures[texture] and texture or 'light'
     local inner = RING_INNER[texture]
@@ -161,7 +182,7 @@ local function Refresh(x,y)
     end
     local retryColour = palette.retry or {198/255,1,61/255} -- retry: acid lime, its own colour
     retryIcon:SetVertexColor(retryColour[1],retryColour[2],retryColour[3],alpha)
-    retryIcon:ClearAllPoints(); retryIcon:SetPoint('TOP',root,'CENTER',0,-outer-6)
+    if retryIcon._fhkOuter ~= outer then retryIcon:ClearAllPoints(); retryIcon:SetPoint('TOP',root,'CENTER',0,-outer-6); retryIcon._fhkOuter = outer end
     retryIcon:SetShown(showCue and cue=='retry' or false)
     -- Melee ready lights only when melee is actionable, like the swing bar's
     -- MELEE READY (player screenshot: a violet ring at 20-25 yards).
@@ -169,6 +190,9 @@ local function Refresh(x,y)
     -- Like the bars: rings show while cooling; melee counts with auto attack on or a real swing.
     local shooting, swinging = true, true
     if FHK.EllesmereAttacksOn then shooting, swinging = FHK.EllesmereAttacksOn() end
+    -- Each Auto Shot touches the shared melee clock for about 0.1 s (review S2): like the bars,
+    -- the melee clock only counts with auto attack on or a real swing.
+    busy.melee = busy.melee and (swinging or FHK.EllesmereRealMeleeSwing and FHK.EllesmereRealMeleeSwing(durations.melee)) and true or false
     for kind, cd in pairs(rings) do
         local wanted = combined or cfg.mode == 'separate' or cfg.mode == kind
         local ready = wanted and not busy[kind] and
@@ -179,21 +203,24 @@ local function Refresh(x,y)
         local cooling = wanted and busy[kind] and (kind ~= 'melee' or meleeReach and (swinging or
             FHK.EllesmereRealMeleeSwing and FHK.EllesmereRealMeleeSwing(durations.melee)))
         local single = combined and cfg.combinedRings == 'one'
+        local clock = kind
         if single then
             ready = false
             if kind == 'melee' then cooling = false
             elseif busy.ranged then cooling = true
-            elseif busy.melee then cooling = true; start, duration = starts.melee, durations.melee end
+            -- One ring on the melee clock wears the melee colour, with the melee gating (review S3).
+            elseif busy.melee and meleeReach then cooling = true; clock = 'melee'; start, duration = starts.melee, durations.melee end
         end
         if cooling or ready then
             cd.fading=nil
             local twoRings = combined and not single or cfg.mode == 'separate'
             local size = (twoRings and kind == 'melee' and outer or radius) * 2
             cd:SetSize(size, size)
-            local c = FHK.EllesmereSwingColors and FHK.EllesmereSwingColors[kind] or {1, 1, 1}
+            local c = FHK.EllesmereSwingColors and FHK.EllesmereSwingColors[clock] or {1, 1, 1}
             if cfg.readinessColors then
-                if single and busy.ranged and not busy.melee and cfg.showMeleeReady then c = brown
-                else c = kind == 'melee' and ready and brown or kind == 'ranged' and green or c end
+                -- Melee-ready brown only when melee is an option (review S3: it showed at 20-35 yd).
+                if single and busy.ranged and not busy.melee and cfg.showMeleeReady and meleeReach then c = brown
+                else c = clock == 'melee' and ready and brown or clock == 'ranged' and green or c end
             end
             if kind=='ranged' and showCue then c=cue=='retry' and retryColour or
                 (FHK.EllesmereSwingColors and FHK.EllesmereSwingColors.cast or {1,.435,.694}) end
@@ -263,71 +290,102 @@ local function InstallOptions()
     optionsWrapper = function(page, parent, offset)
         local height = original(page, parent, offset)
         local W, y, h = EUI.Widgets, -height
-        local _
         local cfg = Settings()
+        local function Refresh() if EUI.RefreshPage then EUI:RefreshPage() end end
+        -- Every row stays on the page and greys out with its reason (review C9) rather than
+        -- appearing and disappearing as the switches above it change.
+        local off = function() return not cfg.enabled end
+        local OFF = 'Enable Swing Timer'
+        local function Needs(c, test, why)
+            c.disabled = function() return off() or (test and test() or false) end
+            c.disabledTooltip = function() return off() and OFF or why end
+            return c
+        end
+        local function Add(left, right)
+            local row, rowHeight = W:DualRow(parent, y, left, right); y = y - (rowHeight or 0)
+            -- Ellesmere's row tools (swatches) on the native page, as on companion sections.
+            if FHK.EllesmereRowExtras then
+                pcall(FHK.EllesmereRowExtras, row, '_leftRegion', left); pcall(FHK.EllesmereRowExtras, row, '_rightRegion', right)
+            end
+        end
+        local _
         _, h = W:SectionHeader(parent, 'SWING TIMER', y); y = y - h
-        _, h = W:DualRow(parent, y,
-            {type='toggle', text='Enable Swing Timer', getValue=function() return cfg.enabled end,
-                setValue=function(v) cfg.enabled=v; Apply(); EUI:RefreshPage() end},
-            {type='dropdown', text='Mode', values={ranged='Auto Shot',melee='Melee',combined='Both - Combined',separate='Both - Separate'},
+        Add({type='toggle', text='Enable Swing Timer', tooltip='Swing rings around the cursor for Auto Shot and melee, next to the GCD ring.',
+                getValue=function() return cfg.enabled end, setValue=function(v) cfg.enabled=v; Apply(); Refresh() end},
+            Needs({type='dropdown', text='Mode', values={ranged='Auto Shot',melee='Melee',combined='Both - Combined',separate='Both - Separate'},
+                tooltip='Which swing clocks get a ring. Combined shares one area; Separate always draws both rings.',
                 order={'combined','melee','ranged','separate'}, getValue=function() return cfg.mode end,
-                setValue=function(v) cfg.mode=v; Apply(); EUI:RefreshPage() end}); y = y - h
-        _, h = W:DualRow(parent, y,
-            {type='toggle',text='Attack Pulses',getValue=function() return FHKEllesmereDB.attackPulses ~= false end,
+                setValue=function(v) cfg.mode=v; Apply(); Refresh() end}))
+        local pulsesOff = function() return FHKEllesmereDB.attackPulses == false end
+        Add({type='toggle',text='Attack Pulses',tooltip='The auto attack squares by the range indicator. Shared with Auto Attack Indicators on the Resource Bars page.',
+                getValue=function() return FHKEllesmereDB.attackPulses ~= false end,
                 setValue=function(v) FHKEllesmereDB.attackPulses=v
-                    if FHK.EllesmereIndicatorSettings then FHK.EllesmereIndicatorSettings('attacks').enabled=v;FHK.ApplyEllesmereIndicators() end end},
-            {type='slider',text='Pulse Icon Size',min=16,max=48,step=1,
-                getValue=function() return FHKEllesmereDB.attackCueSize or 28 end,
-                setValue=function(v) FHKEllesmereDB.attackCueSize=v; if FHK.ApplyAttackCueSize then FHK.ApplyAttackCueSize() end end}); y=y-h
-        if cfg.enabled then
-            _, h = W:DualRow(parent, y,
-                {type='toggle', text='Match GCD Appearance', getValue=function() return cfg.matchGCD end,
-                    tooltip='Use the GCD ring texture, scale and opacity. Swing Radius stays independent.',
-                    setValue=function(v) cfg.matchGCD=v; Apply(); EUI:RefreshPage() end},
-                {type='toggle', text='Combat Only', getValue=function() return cfg.combatOnly end,
-                    setValue=function(v) cfg.combatOnly=v; Apply() end}); y = y - h
-            _, h = W:DualRow(parent, y,
-                {type='slider', text='Radius', min=12,max=100,step=1,getValue=function() return cfg.radius or 27 end,
-                    tooltip='Smallest swing ring radius. Swing rings sit just outside an attached GCD or cast ring; the melee ring sits just outside Auto Shot.',
-                    setValue=function(v) cfg.radius=v; Apply() end},
-                {type='toggle', text='Readiness Colors', getValue=function() return cfg.readinessColors end,
-                    tooltip='Green: ranged cooldown. Red: both cooling in Combined mode. Brown: melee ready or retry.',
-                    setValue=function(v) cfg.readinessColors=v; Apply() end}); y = y - h
-            _, h = W:DualRow(parent, y,
-                {type='toggle',text='Show Melee Ready',getValue=function() return cfg.showMeleeReady end,
-                    tooltip='Keep a full melee circle visible when melee is ready and ranged is still cooling.',
-                    setValue=function(v) cfg.showMeleeReady=v; Apply() end},
-                {type='toggle',text='Show Auto Shot Ready',getValue=function() return cfg.showRangedReady end,
-                    setValue=function(v) cfg.showRangedReady=v; Apply() end}); y = y - h
-            _, h = W:DualRow(parent, y,
-                {type='toggle',text='Keep Clear of GCD',getValue=function() return cfg.avoidGCD ~= false end,
-                    setValue=function(v) cfg.avoidGCD=v; Apply() end},
-                {type='toggle',text='Reset Bow After Melee',getValue=function() if FHK.WeaveTiming then return FHK.WeaveTiming.RangedResetsOnMelee() end; return cfg.resetOnMelee ~= false end,
-                    tooltip='Restart the bow cycle after a melee swing. Uses FHK\'s existing timing setting when installed.',
-                    setValue=function(v) cfg.resetOnMelee=v
-                        if FHK.WeaveTiming and SlashCmdList.FHKTIMING then SlashCmdList.FHKTIMING('rangedreset ' .. (v and 'on' or 'off')) end
-                        Apply() end}); y = y - h
-            _,h=W:DualRow(parent,y,
-                {type='toggle',text='Show Auto Shot Retry',getValue=function() return cfg.showRetry ~= false end,
-                    tooltip='Show the short retry cycle and undo glyph when an active Auto Shot fails quietly.',
-                    setValue=function(v) cfg.showRetry=v; Apply() end},
-                {type='toggle',text='Keep Clear of Cast Ring',getValue=function() return cfg.avoidCast ~= false end,
-                    tooltip='Keep swing rings eight pixels outside the attached cast ring, accounting for both scales.',
-                    setValue=function(v) cfg.avoidCast=v; Apply() end}); y=y-h
-            if cfg.mode == 'combined' then
-                _, h = W:DualRow(parent,y,
-                    {type='dropdown',text='Combined Layout',values={one='One Ring',two='Two Rings'},order={'one','two'},
-                        getValue=function() return cfg.combinedRings end,setValue=function(v) cfg.combinedRings=v; Apply() end},
-                    {type='label',text='Inner: Auto Shot; outer: melee'}); y = y - h
-            end
-            if not cfg.matchGCD then
-                _, h = W:DualRow(parent, y,
-                    {type='dropdown', text='Ring Texture', values={thin='Thin',light='Light',normal='Normal',heavy='Heavy',thick='Thick'},
-                        order={'thin','light','normal','heavy','thick'}, getValue=function() return cfg.ringTex end,
-                        setValue=function(v) cfg.ringTex=v; Apply() end},
-                    {type='slider',text='Opacity',min=10,max=100,step=1,getValue=function() return cfg.alpha end,
-                        setValue=function(v) cfg.alpha=v; Apply() end}); y = y - h
-            end
+                    if FHK.EllesmereIndicatorSettings then FHK.EllesmereIndicatorSettings('attacks').enabled=v;FHK.ApplyEllesmereIndicators() end
+                    Refresh() end},
+            {type='slider',text='Pulse Icon Size',min=16,max=48,step=1,tooltip='Size of the auto attack squares.',
+                disabled=pulsesOff, disabledTooltip='Attack Pulses',
+                getValue=function() local v=FHKEllesmereDB.attackCueSize; return PublicNumber(v) and v or 28 end,
+                setValue=function(v) FHKEllesmereDB.attackCueSize=v; if FHK.ApplyAttackCueSize then FHK.ApplyAttackCueSize() end end})
+        Add(Needs({type='toggle', text='Match GCD Appearance', getValue=function() return cfg.matchGCD end,
+                tooltip='Use the GCD ring texture, scale and opacity. Swing Radius stays independent.',
+                setValue=function(v) cfg.matchGCD=v; Apply(); Refresh() end}),
+            Needs({type='toggle', text='Combat Only', tooltip='Shows the swing rings only while you are in combat.',
+                getValue=function() return cfg.combatOnly end, setValue=function(v) cfg.combatOnly=v; Apply() end}))
+        local swatch = FHK.EllesmereColorSwatch
+        local readiness = Needs({type='toggle', text='Readiness Colors', getValue=function() return cfg.readinessColors end,
+            tooltip='On: Auto Shot cools in the Shooting color and a ready melee ring shows in the Melee color. Off: each ring keeps its swing timer color. The swatches are the shared Hunter colors.',
+            setValue=function(v) cfg.readinessColors=v; Apply() end})
+        if type(swatch)=='function' then
+            readiness.swatches={swatch('shoot','Shooting Color (shared)'),swatch('melee','Melee Color (shared)'),swatch('retry','Retry Color (shared)')}
+        end
+        Add(Needs({type='slider', text='Radius', min=12,max=100,step=1,getValue=function() return cfg.radius or 27 end,
+                tooltip='Smallest swing ring radius. Swing rings sit just outside an attached GCD or cast ring; the melee ring sits just outside Auto Shot.',
+                setValue=function(v) cfg.radius=v; Apply() end}), readiness)
+        local noMelee = function() return cfg.mode == 'ranged' end
+        local noRanged = function() return cfg.mode == 'melee' end
+        Add(Needs({type='toggle',text='Show Melee Ready Ring',getValue=function() return cfg.showMeleeReady end,
+                tooltip='Keeps a full melee circle visible when melee is ready and Auto Shot is still cooling.',
+                setValue=function(v) cfg.showMeleeReady=v; Apply() end}, noMelee, 'This option needs a Mode with a melee ring'),
+            Needs({type='toggle',text='Show Auto Shot Ready',getValue=function() return cfg.showRangedReady end,
+                tooltip='Keeps a full Auto Shot circle visible when Auto Shot is ready and melee is still cooling.',
+                setValue=function(v) cfg.showRangedReady=v; Apply() end}, noRanged, 'This option needs a Mode with an Auto Shot ring'))
+        Add(Needs({type='toggle',text='Keep Clear of GCD',getValue=function() return cfg.avoidGCD ~= false end,
+                tooltip='Keeps the swing rings just outside an attached GCD ring, whatever the Radius.',
+                setValue=function(v) cfg.avoidGCD=v; Apply() end}),
+            Needs({type='toggle',text='Restart Bow After Melee',getValue=function() if FHK.WeaveTiming then return FHK.WeaveTiming.RangedResetsOnMelee() end; return cfg.resetOnMelee ~= false end,
+                tooltip='Restarts the bow cycle after a melee swing. Uses the ForeverHunterKeys timing setting when it is installed.',
+                setValue=function(v) cfg.resetOnMelee=v
+                    if FHK.WeaveTiming and SlashCmdList.FHKTIMING then SlashCmdList.FHKTIMING('rangedreset ' .. (v and 'on' or 'off')) end
+                    Apply() end}))
+        Add(Needs({type='toggle',text='Show Auto Shot Retry',getValue=function() return cfg.showRetry ~= false end,
+                tooltip='Shows the short retry cycle and undo glyph when an active Auto Shot fails quietly.',
+                setValue=function(v) cfg.showRetry=v; Apply() end}, noRanged, 'This option needs a Mode with an Auto Shot ring'),
+            Needs({type='toggle',text='Keep Clear of Cast Ring',getValue=function() return cfg.avoidCast ~= false end,
+                tooltip='Keeps the swing rings just outside an attached cast ring, accounting for both scales.',
+                setValue=function(v) cfg.avoidCast=v; Apply() end}))
+        Add(Needs({type='dropdown',text='Combined Layout',values={one='One Ring',two='Two Rings'},order={'one','two'},
+                tooltip='Two Rings: Auto Shot inside, melee outside. One Ring: one sweep for whichever clock is running.',
+                getValue=function() return cfg.combinedRings end,setValue=function(v) cfg.combinedRings=v; Apply() end},
+                function() return cfg.mode ~= 'combined' end, 'This option requires Mode set to Both - Combined'),
+            {type='label',text='Inner: Auto Shot; outer: melee'})
+        local matched = function() return cfg.matchGCD end
+        local MATCHED = 'This option follows the GCD ring while Match GCD Appearance is on'
+        Add(Needs({type='dropdown', text='Ring Texture', values={thin='Thin',light='Light',normal='Normal',heavy='Heavy',thick='Thick'},
+                tooltip='Thickness of the swing rings.',
+                order={'thin','light','normal','heavy','thick'}, getValue=function() return cfg.ringTex end,
+                setValue=function(v) cfg.ringTex=v; Apply() end}, matched, MATCHED),
+            Needs({type='slider',text='Ring Opacity %',min=10,max=100,step=1,tooltip='Opacity of the swing rings.',
+                getValue=function() return cfg.alpha end, setValue=function(v) cfg.alpha=v; Apply() end}, matched, MATCHED))
+        if FHK.EllesmereSectionReset then
+            Add(FHK.EllesmereSectionReset('Swing Timer', function()
+                    FHKEllesmereDB.swingCursor = nil
+                    local fresh = Settings()
+                    for k in pairs(cfg) do cfg[k] = nil end
+                    for k, v in pairs(fresh) do cfg[k] = v end
+                    FHKEllesmereDB.swingCursor = cfg
+                    Apply()
+                end, 'Restores the swing ring settings to their defaults (off). Attack Pulses and the shared colors keep theirs.'),
+                {type='label',text='Ellesmere\'s cursor Reset also clears these'})
         end
         return math.abs(y)
     end
@@ -352,7 +410,8 @@ end
 local function CastPosition(x,y)
     if not CastFollowActive() then StopCastFollow();return end
     local looking=IsMouselooking and IsMouselooking()
-    if not (issecretvalue and issecretvalue(looking)) and looking==true then return end
+    -- A ring that starts during mouselook still takes the frozen point once (review S4).
+    if not castFollow.dirty and not (issecretvalue and issecretvalue(looking)) and looking==true then return end
     local scale=UIParent:GetEffectiveScale()
     if not PublicNumber(x) or not PublicNumber(y) or not PublicNumber(scale) or scale<=0 then return end
     x,y=math.floor(x/scale+.5),math.floor(y/scale+.5)

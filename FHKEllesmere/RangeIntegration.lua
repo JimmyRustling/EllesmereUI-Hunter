@@ -37,6 +37,48 @@ local function Read(fn,...)
     local ok,v=pcall(fn,...)
     if ok and not (issecretvalue and issecretvalue(v)) then return v end
 end
+-- Range brackets (player, 2026-10-06: "customisability in what is shown in each bracket"):
+-- per bracket, whether the centre indicator shows, what its text says, a custom label, and
+-- an optional pulse and sound when the target enters that bracket.
+local BRACKETS={{'melee','Melee'},{'deadzone','Dead Zone'},{'shoot','Shooting'},{'far','Too Far'},{'out','Out Of Range'},{'unknown','Unknown'}}
+NS.EllesmereRangeBrackets=BRACKETS
+local BRACKET_DEFAULT={show=true,content='both',label='',pulse=false,sound='none'}
+function NS.EllesmereRangeBracket(key)
+    local s=NS.EllesmereIndicatorSettings('range')
+    if type(s.brackets)~='table' then s.brackets={} end
+    local b=s.brackets[key]
+    if type(b)~='table' then b={};s.brackets[key]=b end
+    for k,v in pairs(BRACKET_DEFAULT) do if b[k]==nil or type(b[k])~=type(v) then b[k]=v end end
+    return b
+end
+-- Bracket presets: Always Show; Hide While Shooting (the indicator only speaks when you are not
+-- shooting); Problems Only (dead zone, too far and out of range, with a pulse on entering).
+local BRACKET_PRESETS={
+    all={melee={show=true,pulse=false},deadzone={show=true,pulse=false},shoot={show=true,pulse=false},far={show=true,pulse=false},out={show=true,pulse=false},unknown={show=true,pulse=false}},
+    quiet={melee={show=true,pulse=false},deadzone={show=true,pulse=false},shoot={show=false,pulse=false},far={show=true,pulse=false},out={show=true,pulse=false},unknown={show=true,pulse=false}},
+    problems={melee={show=false,pulse=false},deadzone={show=true,pulse=true},shoot={show=false,pulse=false},far={show=true,pulse=true},out={show=true,pulse=true},unknown={show=false,pulse=false}},
+}
+function NS.GetEllesmereRangeBracketPreset()
+    for name,preset in pairs(BRACKET_PRESETS) do
+        local match=true
+        for key,fields in pairs(preset) do
+            local b=NS.EllesmereRangeBracket(key)
+            for k,v in pairs(fields) do if b[k]~=v then match=false end end
+        end
+        if match then return name end
+    end
+    return 'custom'
+end
+function NS.ApplyEllesmereRangeBracketPreset(name)
+    local preset=BRACKET_PRESETS[name]
+    if not preset then return false end
+    for key,fields in pairs(preset) do
+        local b=NS.EllesmereRangeBracket(key)
+        for k,v in pairs(fields) do b[k]=v end
+    end
+    NS.ApplyEllesmereIndicators()
+    return true
+end
 function NS.GetEllesmereRange(unit)
     if select(2,UnitClass('player'))=='HUNTER' then return NS.GetUnitRange(unit) end
     local sample={state='unknown',title='Range unavailable',bracket='',minimum=0,maximum=Read(EUI.Range_GetAttackCutoff) or 40}
@@ -50,12 +92,17 @@ function NS.GetEllesmereRange(unit)
         low=math.floor(exact/5)*5;high=low+5
         if exact<=5 then low,high=0,5 end
     end
-    if type(low)~='number' then low=Read(EUI.Range_LowerBound,unit) end
+    -- Ellesmere's single-unit helpers keep one-slot caches (review R6): the target only;
+    -- other plates use the sweep API.
+    local single=unit=='target'
+    if type(low)~='number' and single then low=Read(EUI.Range_LowerBound,unit) end
     if type(low)=='number' then
         sample.bracket=type(high)=='number' and string.format('%g' .. DASH .. '%g yd',low,high) or string.format('%g+ yd',low)
         sample.distance=exact or low;sample.state,sample.title='distance','Distance'
     end
-    local beyond=Read(EUI.Range_IsBeyondAttackRange,unit,sample.maximum)
+    local beyond
+    if single then beyond=Read(EUI.Range_IsBeyondAttackRange,unit,sample.maximum)
+    else beyond=Read(EUI.Range_SweepBeyond,unit,sample.maximum) end
     if type(exact)=='number' and exact>sample.maximum or beyond==true then sample.state,sample.title='out','Out of range'
     elseif type(high)=='number' and high<=5 then sample.state,sample.title='melee','Melee'
     elseif beyond==false then sample.title='In range' end
@@ -213,7 +260,7 @@ function NS.RegisterEllesmereIndicators(rangeFrame,attackFrame,hud)
     NS.ApplyEllesmereIndicators()
     if EUI.MakeUnlockElement and EUI.RegisterUnlockElements then
         EUI:RegisterUnlockElements({Element('ForeverRangeIndicator','Range Indicator','range',ranges,285),
-            Element('ForeverAttackIndicators','Auto Attack / Shoot / Throw','attacks',attacks,286)},'EllesmereUIResourceBars')
+            Element('ForeverAttackIndicators','Auto Attack / Shoot / Throw','attacks',attacks,286)},'FHKEllesmere')
     end
 end
 -- Range cue presets (audit F23): each cue answers its own question, so a preset
@@ -414,7 +461,7 @@ function NS.PaintEllesmereFrameRangeMark(frame,colour,visible)
     if NS.FadeEllesmere then NS.FadeEllesmere(m,visible) else m:SetShown(visible);m:SetAlpha(visible and 1 or 0) end
 end
 local slots={
-    {key='textSlotTop',anchor='BOTTOM',point='TOP',xOff=0,top=true},
+    {key='textSlotTop',anchor='BOTTOM',point='TOP',xOff=0,top=true,justify='CENTER'}, -- SetJustifyH takes LEFT/CENTER/RIGHT only (review)
     {key='textSlotLeft',anchor='LEFT',point='LEFT',xOff=4},
     {key='textSlotCenter',anchor='CENTER',point='CENTER',xOff=0},
     {key='textSlotRight',anchor='RIGHT',point='RIGHT',xOff=-2},
@@ -457,11 +504,16 @@ function NS.PaintEllesmereRangeText(plate,f,distance,state,colour,visible)
             fs:SetShown(visible)
         elseif fs then fs:Hide() end
     end
-    if not assigned then
+    -- Hidden default text keeps its place: the loot cue may be using it (suite review SF-9).
+    if not assigned and visible then
         -- Same face and outline as the plate's health numbers (text consistency).
-        if np and np.SetFSFont then np.SetFSFont(f.text,s.textSize) else Font(f.text,s.textSize,'nameplates') end
+        -- Font and anchor only when they change (review R10); the colour follows range every tick.
         local anchor=plate.cast and plate.cast:IsShown() and plate.cast or plate.health
-        f.text:ClearAllPoints();f.text:SetPoint('TOP',anchor,'BOTTOM',s.textX,s.textY)
+        if f._fhkTextRevision~=revision or f._fhkTextAnchor~=anchor then
+            if np and np.SetFSFont then np.SetFSFont(f.text,s.textSize) else Font(f.text,s.textSize,'nameplates') end
+            f.text:ClearAllPoints();f.text:SetPoint('TOP',anchor,'BOTTOM',s.textX,s.textY)
+            f._fhkTextRevision,f._fhkTextAnchor=revision,anchor
+        end
         local c=s.textColourMode=='custom' and s.textColour or nil
         f.text:SetTextColor(c and c.r or colour[1],c and c.g or colour[2],c and c.b or colour[3],1)
     end
@@ -475,74 +527,225 @@ function NS.AddEllesmereRangeSlotChoices(cfg)
         end
     end
 end
+-- Section Reset (review C8): a button that restores only its own section's settings, after
+-- Ellesmere's confirm popup when the suite offers one. Shared by every companion builder:
+-- reset() does the work, then the page re-reads its rows.
+function NS.EllesmereSectionReset(section,reset,tooltip)
+    local name=tostring(section)
+    local title='Reset '..name
+    local function Go()
+        local ok,err=pcall(reset)
+        if not ok and type(geterrorhandler)=='function' then pcall(geterrorhandler(),err) end
+        if EUI.RefreshPage then pcall(EUI.RefreshPage,EUI) end
+    end
+    return {type='button',text=title,
+        tooltip=tooltip or ('Restores the '..name..' settings to their defaults. Other sections keep theirs.'),
+        onClick=function()
+            if type(EUI.ShowConfirmPopup)=='function' and pcall(EUI.ShowConfirmPopup,EUI,{title=title,
+                message='Restore the '..name..' settings to their defaults?',confirmText='Reset',cancelText='Cancel',onConfirm=Go}) then
+                return
+            end
+            Go()
+        end}
+end
+-- One indicator's settings back to DEFAULTS in place (option rows keep their reference);
+-- keep lists the keys that stay, such as the Unlock Mode position.
+local function ResetIndicator(kind,keep)
+    local s=NS.EllesmereIndicatorSettings(kind)
+    local kept={}
+    for _,k in ipairs(keep or {}) do kept[k]=s[k] end
+    for k in pairs(s) do s[k]=nil end
+    for k,v in pairs(defaults[kind]) do s[k]=type(v)=='table' and Copy(v) or v end
+    for k,v in pairs(kept) do s[k]=v end
+    NS.ApplyEllesmereIndicators()
+end
+NS.ResetEllesmereIndicatorSection=ResetIndicator
+local SIDES,SIDE_ORDER={left='Left',right='Right',top='Top',bottom='Bottom'},{'left','right','top','bottom'}
+local TEXTURES,TEXTURE_ORDER={flat='Flat',textured='Native Texture'},{'flat','textured'}
+-- Saved colours are read defensively: a damaged value falls back to the default.
+local function RGB(c,d)
+    if type(c)=='table' and type(c.r)=='number' and type(c.g)=='number' and type(c.b)=='number' then return c.r,c.g,c.b end
+    return d.r,d.g,d.b
+end
+-- Ellesmere's row tools (review C10): the main choice on the row, sizes in its cog, its
+-- colour as an inline swatch. Rows that do not apply grey out and say why (review C9).
 function NS.AddEllesmereIndicatorOptions(Row,kind)
     local s=NS.EllesmereIndicatorSettings(kind)
+    local base=defaults[kind]
     local function Set(key,v)
         s[key]=v
         if kind=='attacks' and key=='enabled' then FHKEllesmereDB.attackPulses=v end
         NS.ApplyEllesmereIndicators()
     end
+    local function Needs(cfg,off,why) if off then cfg.disabled,cfg.disabledTooltip=off,why end;return cfg end
     local function Toggle(text,key) return {type='toggle',text=text,getValue=function() return s[key]~=false end,setValue=function(v) Set(key,v) end} end
-    local function Slider(text,key,min,max,step) return {type='slider',text=text,min=min,max=max,step=step or 1,getValue=function() return s[key] end,setValue=function(v) Set(key,v) end} end
-    -- Opacity reads as a percentage (audit F28); stored as 0-1.
-    local function Percent(text,key) return {type='slider',text=text..' %',min=10,max=100,step=5,
-        getValue=function() return math.floor((s[key] or 1)*100+.5) end,setValue=function(v) Set(key,v/100) end} end
     local function Drop(text,key,values,order) return {type='dropdown',text=text,values=values,order=order,getValue=function() return s[key] end,setValue=function(v) Set(key,v) end} end
-    local function Colour(text,key) return {type='colorpicker',text=text,hasAlpha=false,getValue=function() local c=s[key];return c.r,c.g,c.b,1 end,
-        setValue=function(r,g,b) s[key]={r=r,g=g,b=b};NS.ApplyEllesmereIndicators() end} end
+    local function Slider(text,key,min,max,step) return {type='slider',text=text,min=min,max=max,step=step or 1,
+        getValue=function() local v=s[key];return type(v)=='number' and v or base[key] end,setValue=function(v) Set(key,v) end} end
+    local function CogSlider(label,key,min,max,step,off,why) return {type='slider',label=label,min=min,max=max,step=step or 1,disabled=off,disabledTooltip=why,
+        get=function() local v=s[key];return type(v)=='number' and v or base[key] end,set=function(v) Set(key,v) end} end
+    -- Opacity reads as a percentage (audit F28); stored as 0-1.
+    local function CogPercent(label,key,min,off,why) return {type='slider',label=label,min=min,max=100,step=5,disabled=off,disabledTooltip=why,
+        get=function() local v=s[key];v=type(v)=='number' and v or base[key] or 1;return math.floor(v*100+.5) end,set=function(v) Set(key,v/100) end} end
+    local function CogDrop(label,key,values,order,off,why) return {type='dropdown',label=label,values=values,order=order,disabled=off,disabledTooltip=why,
+        get=function() return s[key] end,set=function(v) Set(key,v) end} end
+    local function Swatch(key,tip,off,why) return {tooltip=tip,hasAlpha=false,disabled=off,disabledTooltip=why,
+        getValue=function() local r,g,b=RGB(s[key],base[key]);return r,g,b,1 end,
+        setValue=function(r,g,b)
+            if type(r)~='number' or type(g)~='number' or type(b)~='number' then return end
+            s[key]={r=r,g=g,b=b};NS.ApplyEllesmereIndicators()
+        end} end
+    local function ColourMode(text) return Drop(text,'colourMode',{range='Range State',custom='Custom'},{'range','custom'}) end
     if kind=='plate' then
-        Row(Drop('Non-Target Range Mark','mode',{glow='Soft Glow',stripe='Edge Stripe'},{'glow','stripe'}),Percent('Range Glow Opacity','glowOpacity'))
-        Row(Drop('Range Stripe Position','side',{left='Left',right='Right',top='Top',bottom='Bottom'},{'left','right','top','bottom'}),Slider('Range Stripe Thickness','thickness',1,12),true)
-        Row(Slider('Range Stripe Gap','gap',0,12),Percent('Range Stripe Opacity','opacity'),true)
-        Row(Drop('Range Stripe Style','style',{flat='Flat',textured='Native Texture'},{'flat','textured'}),
-            Drop('Range Stripe Color','colourMode',{range='Range State',custom='Custom'},{'range','custom'}),true)
-        Row(Colour('Custom Stripe Color','colour'),Drop('Range Text Color','textColourMode',{range='Range State',slot='Native Slot Color',custom='Custom'},{'range','slot','custom'}),true)
-        Row(Colour('Custom Range Text Color','textColour'),Slider('Default Range Text Size','textSize',8,20),true)
-        Row(Slider('Default Range Text X','textX',-150,150),Slider('Default Range Text Y','textY',-60,60),true)
+        local glowOff=function() return s.mode=='stripe' end
+        local stripeOff=function() return s.mode~='stripe' end
+        local GLOW,STRIPE='This option applies to the Soft Glow mark','This option applies to the Edge Stripe mark'
+        local mark=Drop('Non-Target Range Mark','mode',{glow='Soft Glow',stripe='Edge Stripe'},{'glow','stripe'})
+        mark.tooltip='How enemies other than your target show their range: a soft glow around the plate or a stripe along one edge. Dark Mode always uses a thin bottom strip.'
+        mark.cog={title='Range Mark',rows={CogPercent('Glow Opacity %','glowOpacity',10,glowOff,GLOW),
+            CogDrop('Stripe Position','side',SIDES,SIDE_ORDER,stripeOff,STRIPE),CogSlider('Stripe Thickness','thickness',1,12,1,stripeOff,STRIPE),
+            CogSlider('Stripe Gap','gap',0,12,1,stripeOff,STRIPE),CogPercent('Stripe Opacity %','opacity',10,stripeOff,STRIPE),
+            CogDrop('Stripe Texture','style',TEXTURES,TEXTURE_ORDER,stripeOff,STRIPE)}}
+        local markColour=ColourMode('Range Mark Color')
+        markColour.tooltip='Range State: the glow or stripe follows the range colors. Custom: one color, set with the swatch.'
+        markColour.swatches={Swatch('colour','Custom Range Mark Color',function() return s.colourMode~='custom' end,'This option requires Range Mark Color set to Custom')}
+        Row(mark,markColour)
+        local text=Drop('Range Text Color','textColourMode',{range='Range State',slot='Native Slot Color',custom='Custom'},{'range','slot','custom'})
+        text.tooltip='Range State: the text follows the range colors. Native Slot Color: the color set on its text slot. Custom: the swatch color.'
+        text.swatches={Swatch('textColour','Custom Range Text Color',function() return s.textColourMode~='custom' end,'This option requires Range Text Color set to Custom')}
+        local size=Slider('Default Range Text Size','textSize',8,20)
+        size.tooltip='Size of the range text under the plate when no native text slot shows range.'
+        size.move={title='Default Range Text Position',rows={CogSlider('X Offset','textX',-150,150),CogSlider('Y Offset','textY',-60,60)}}
+        Row(text,size,true)
         Row({type='label',text='Assign Range / Range State / Range | State to any native text slot'},
             {type='label',text='Slot cogs control its font, size, offsets and custom color'})
+        Row(NS.EllesmereSectionReset('Range Indicator Style',function() ResetIndicator('plate') end),
+            {type='label',text='Native text slot settings are not changed'})
     elseif kind=='frame' then
-        local sides={left='Left',right='Right',top='Top',bottom='Bottom'}
-        Row(Toggle('Unit Frame Range Bar','enabled'),Drop('Range Bar Position','side',sides,{'left','right','top','bottom'}))
-        Row(Drop('Range Bar Placement','placement',{outside='Extends the Frame',inside='Inside the Frame'},{'outside','inside'}),Slider('Range Bar Thickness','thickness',1,12))
-        Row(Slider('Range Bar Gap','gap',0,12),Slider('Range Bar Border','borderSize',0,3),true)
-        Row(Percent('Range Bar Opacity','opacity'),Drop('Range Bar Style','style',{flat='Flat',textured='Native Texture'},{'flat','textured'}),true)
-        Row(Drop('Range Bar Color','colourMode',{range='Range State',custom='Custom'},{'range','custom'}),Colour('Custom Range Bar Color','colour'),true)
-        Row(Toggle('Target Frame','target'),Toggle('Focus Frame','focus'))
-        Row(Toggle('Target of Target Frame','targettarget'),{type='label',text='Enemies only; hidden while range is unknown'})
+        local off=function() return s.enabled==false end
+        local OFF='Unit Frame Range Bar'
+        local bar=Toggle('Unit Frame Range Bar','enabled')
+        bar.tooltip='A bar in the range color on the target, focus and target of target frames. It hides while range is unknown.'
+        bar.cog={title='Range Bar',disabled=off,disabledTooltip=OFF,rows={
+            CogDrop('Position','side',SIDES,SIDE_ORDER),
+            CogDrop('Placement','placement',{outside='Extends the Frame',inside='Inside the Frame'},{'outside','inside'}),
+            CogSlider('Thickness','thickness',1,12),CogSlider('Gap','gap',0,12),
+            CogSlider('Border','borderSize',0,3,1,function() return s.placement=='inside' end,'This option applies when Placement is Extends the Frame'),
+            CogPercent('Opacity %','opacity',10),CogDrop('Texture','style',TEXTURES,TEXTURE_ORDER)}}
+        local colour=Needs(ColourMode('Range Bar Color'),off,OFF)
+        colour.tooltip='Range State: the bar follows the range colors. Custom: one color, set with the swatch.'
+        colour.swatches={Swatch('colour','Custom Range Bar Color',function() return s.colourMode~='custom' end,'This option requires Range Bar Color set to Custom')}
+        Row(bar,colour)
+        Row(Needs(Toggle('Target Frame','target'),off,OFF),Needs(Toggle('Focus Frame','focus'),off,OFF))
+        Row(Needs(Toggle('Target of Target Frame','targettarget'),off,OFF),{type='label',text='Enemies only; hidden while range is unknown'})
+        -- The frame bar has no free position, so its reset is the section's own (review 2026-10-06).
+        Row(NS.EllesmereSectionReset('Range Bar',function() ResetIndicator('frame') end),
+            {type='label',text='The bar moves with its unit frame'})
     elseif kind=='range' then
-        Row(Toggle('Range Indicator','enabled'),Toggle('Range Indicator Text','text'))
-        Row({type='toggle',text='Facing Failure Cue',
+        local off=function() return s.enabled==false end
+        local OFF='Range Indicator'
+        local indicator=Toggle('Range Indicator','enabled')
+        indicator.tooltip='The center range indicator for your target: a bar, a block or your weapon icon in the range color.'
+        indicator.preview={tip='Preview the range indicator for ten seconds',duration=10,disabled=off,disabledTooltip=OFF,show=function()
+            if NS.SetEllesmerePreviewScenario then NS.SetEllesmerePreviewScenario(select(2,UnitClass('player'))=='HUNTER' and 'deadzone' or 'melee') end
+        end}
+        local text=Needs(Toggle('Range Indicator Text','text'),function() return off() or s.orientation=='block' end,
+            function() return off() and OFF or 'This option does not apply to the Color Block shape' end)
+        text.tooltip='Shows the range state and yards beside or under the indicator.'
+        text.cog={title='Range Indicator Text',rows={CogSlider('Font Size','fontSize',8,20)}}
+        Row(indicator,text)
+        Row(Needs({type='toggle',text='Facing Failure Cue',
             tooltip='Shows FACE TARGET beside the range indicator when the client reports a facing failure. Clears after a successful harmful cast, target change or a short timeout.',
             getValue=function() return s.facingWarning~=false end,
-            setValue=function(v) s.facingWarning=v;if NS.SyncEllesmereFacingCue then NS.SyncEllesmereFacingCue() end end},
-            {type='button',text='Check Facing Data',onClick=function() if NS.ExplainEllesmereFacing then NS.ExplainEllesmereFacing() end end})
-        Row({type='toggle',text='Line Of Sight / Movement Failure Cue',
-            tooltip='Shows NO LINE OF SIGHT or STOP MOVING on the same range indicator after a confirmed client error. Clears on target change, successful harmful cast or after 1.2 seconds.',
+            setValue=function(v) s.facingWarning=v;if NS.SyncEllesmereFacingCue then NS.SyncEllesmereFacingCue() end end},off,OFF),
+            {type='button',text='Check Facing Data',tooltip='Prints what the client reports about facing your target.',
+                onClick=function() if NS.ExplainEllesmereFacing then NS.ExplainEllesmereFacing() end end})
+        Row(Needs({type='toggle',text='Line Of Sight / Movement Failure Cue',
+            tooltip='Shows NO LINE OF SIGHT or STOP MOVING on the range indicator after a confirmed client error. Clears on target change, a successful harmful cast or after 1.2 seconds.',
             getValue=function() return s.castFailureWarning==true end,
-            setValue=function(v) s.castFailureWarning=v;if NS.SyncEllesmereFacingCue then NS.SyncEllesmereFacingCue() end end},
-            {type='label',text='Cast failures share the existing range indicator'})
-        Row(Drop('Range Indicator Style','orientation',{horizontal='Horizontal Bar',vertical='Vertical Bar',icon='Weapon Icon',block='Color Block'},{'block','icon','horizontal','vertical'}),Slider('Range Indicator Length','length',80,500),true)
-        Row(Slider('Range Block Width','blockWidth',16,200),Slider('Range Block Height','blockHeight',6,40),true)
-        Row(Slider('Range Icon Size','iconSize',20,48),{type='label',text='Weapon Icon: the border shows the range color'},true)
-        Row(Slider('Range Indicator Thickness','thickness',1,16),Percent('Range Indicator Opacity','opacity'),true)
-        Row(Drop('Range Indicator Style','style',{flat='Flat',textured='Native Texture'},{'flat','textured'}),Slider('Range Indicator Font Size','fontSize',8,20),true)
-        Row(Drop('Range Indicator Color','colourMode',{range='Range State',custom='Custom'},{'range','custom'}),Colour('Custom Range Indicator Color','colour'),true)
+            setValue=function(v) s.castFailureWarning=v;if NS.SyncEllesmereFacingCue then NS.SyncEllesmereFacingCue() end end},off,OFF),
+            {type='label',text='Cast failures share the range indicator'})
+        local bars=function() return s.orientation=='icon' or s.orientation=='block' end
+        local BARS='This option applies to the Horizontal and Vertical Bar shapes'
+        local notBlock=function() return s.orientation~='block' end
+        local notIcon=function() return s.orientation~='icon' end
+        local shape=Needs(Drop('Range Indicator Shape','orientation',{horizontal='Horizontal Bar',vertical='Vertical Bar',icon='Weapon Icon',block='Color Block'},
+            {'block','icon','horizontal','vertical'}),off,OFF)
+        shape.tooltip='Color Block: a block with a black outline. Weapon Icon: your ranged weapon framed in the range color. Bars: a thin rail with the range text.'
+        shape.cog={title='Range Indicator Size',rows={
+            CogSlider('Bar Length','length',80,500,1,bars,BARS),CogSlider('Bar Thickness','thickness',1,16,1,bars,BARS),
+            CogDrop('Bar Texture','style',TEXTURES,TEXTURE_ORDER,bars,BARS),
+            CogSlider('Block Width','blockWidth',16,200,1,notBlock,'This option applies to the Color Block shape'),
+            CogSlider('Block Height','blockHeight',6,40,1,notBlock,'This option applies to the Color Block shape'),
+            CogSlider('Icon Size','iconSize',20,48,1,notIcon,'This option applies to the Weapon Icon shape'),
+            CogPercent('Opacity %','opacity',10)}}
+        local colour=Needs(ColourMode('Range Indicator Color'),off,OFF)
+        colour.tooltip='Range State: the indicator follows the range colors. Custom: one color, set with the swatch.'
+        colour.swatches={Swatch('colour','Custom Range Indicator Color',function() return s.colourMode~='custom' end,'This option requires Range Indicator Color set to Custom')}
+        Row(shape,colour)
+        -- One row per bracket: show it, what the text says; the cog holds label, pulse and sound.
+        Row({type='dropdown',text='Range Bracket Preset',values={all='Always Show',quiet='Hide While Shooting',problems='Problems Only',custom='Custom'},
+            order={'all','quiet','problems','custom'},disabled=off,disabledTooltip=OFF,
+            tooltip='Always Show: the indicator shows in every bracket. Hide While Shooting: it shows only when you are not in shooting range. Problems Only: dead zone, too far and out of range, each with a pulse as you enter it.',
+            getValue=function() return NS.GetEllesmereRangeBracketPreset() end,
+            setValue=function(v) if v~='custom' then NS.ApplyEllesmereRangeBracketPreset(v) end end},
+            {type='label',text='Changing a bracket below switches to Custom'})
+        local soundValues={none='None',raid='Raid Warning',alarm='Alarm',ready='Ready Check',tick='Tick'}
+        local soundOrder={'none','raid','alarm','ready','tick'}
+        local contents={both='State And Yards',label='State Only',yards='Yards Only',none='Color Only'}
+        for _,item in ipairs(BRACKETS) do
+            local key,name=item[1],item[2]
+            local b=NS.EllesmereRangeBracket(key)
+            local function BSet(k,v) b[k]=v;NS.ApplyEllesmereIndicators() end
+            local show={type='toggle',text='Show In '..name,disabled=off,disabledTooltip=OFF,
+                tooltip='Off hides the range indicator while your target is in this bracket. Plates and unit frames keep their range color.',
+                getValue=function() return b.show end,setValue=function(v) BSet('show',v) end}
+            show.cog={title=name..' Bracket',disabled=off,disabledTooltip=OFF,rows={
+                {type='input',label='Custom Label',get=function() return b.label end,
+                    set=function(v)
+                        v=type(v)=='string' and v:gsub('|',''):gsub('^%s+',''):gsub('%s+$','') or ''
+                        BSet('label',v:sub(1,24))
+                    end},
+                {type='toggle',label='Pulse On Entering',get=function() return b.pulse end,set=function(v) BSet('pulse',v) end},
+                {type='dropdown',label='Sound On Entering',values=soundValues,order=soundOrder,get=function() return b.sound end,
+                    set=function(v) BSet('sound',v);if NS.PlayEllesmereCueSound then NS.PlayEllesmereCueSound(v,'bracketPreview') end end}}}
+            Row(show,{type='dropdown',text=name..' Text',values=contents,order={'both','label','yards','none'},disabled=off,disabledTooltip=OFF,
+                tooltip='What the range indicator text says in this bracket. Color Only keeps just the bar or block color.',
+                getValue=function() return b.content end,setValue=function(v) BSet('content',v) end},true)
+        end
+        Row({type='button',text='Reset Range Position',tooltip='Returns the indicator to its place under the HUD. Move it in Unlock Mode.',
+            disabled=function() return s.position==nil end,disabledTooltip='This option is available after moving the indicator in Unlock Mode',
+            onClick=function() s.position=nil;NS.ApplyEllesmereIndicators() end},
+            NS.EllesmereSectionReset('Range Indicator',function() ResetIndicator('range',{'position'}) end,
+                'Restores the Range Indicator shape, colors, brackets and failure cues to their defaults. Its position stays.'))
     else
-        Row(Toggle('Auto Attack Indicators','enabled'),Toggle('Attack Indicator Labels','labels'))
-        Row(Toggle('Melee Attack Indicator','melee'),Toggle('Ranged / Shoot / Throw Indicator','ranged'))
-        Row(Drop('Attack Indicator Orientation','orientation',{flank='Either Side of Range',horizontal='Horizontal',vertical='Vertical'},{'flank','horizontal','vertical'}),Slider('Attack Indicator Gap','gap',0,50),true)
-        Row(Drop('Attack Indicator Artwork','style',{class='Class Icons',combat='Combat Icons'},{'class','combat'}),Percent('Attack Indicator Opacity','opacity'),true)
-        Row({type='slider',text='Attack Indicator Size',min=16,max=48,step=1,
-            getValue=function() return FHKEllesmereDB.attackCueSize or 28 end,
-            setValue=function(v) FHKEllesmereDB.attackCueSize=v;NS.ApplyEllesmereIndicators() end},
-            {type='toggle',text='Show Attack Squares While Off',getValue=function() return s.showIdle==true end,setValue=function(v) Set('showIdle',v) end})
-        Row({type='label',text='Ranged label follows Auto Shot / Shoot / Throw'},
-            {type='label',text='Either Side of Range uses framed squares; artwork applies to the other layouts'})
-    end
-    if kind~='plate' then
-        Row({type='button',text=kind=='range' and 'Reset Range Position' or 'Reset Attack Position',onClick=function() s.position=nil;NS.ApplyEllesmereIndicators() end},
-            {type='label',text='Move independently in native Unlock Mode'})
+        local off=function() return s.enabled==false end
+        local OFF='Auto Attack Indicators'
+        local main=Toggle('Auto Attack Indicators','enabled')
+        main.tooltip='Squares by the range indicator that light while Auto Shot, Shoot, Throw or melee auto attack is on.'
+        main.cog={title='Auto Attack Indicators',disabled=off,disabledTooltip=OFF,rows={
+            CogDrop('Layout','orientation',{flank='Either Side of Range',horizontal='Horizontal',vertical='Vertical'},{'flank','horizontal','vertical'}),
+            CogSlider('Gap','gap',0,50),
+            CogDrop('Artwork','style',{class='Class Icons',combat='Combat Icons'},{'class','combat'},function() return s.orientation=='flank' end,
+                'This option does not apply to the Either Side of Range layout, which uses framed squares'),
+            CogPercent('Opacity %','opacity',10),
+            {type='slider',label='Size',min=16,max=48,step=1,
+                get=function() local v=FHKEllesmereDB.attackCueSize;return type(v)=='number' and v or 28 end,
+                set=function(v) FHKEllesmereDB.attackCueSize=v;NS.ApplyEllesmereIndicators() end}}}
+        local labels=Needs(Toggle('Attack Indicator Labels','labels'),off,OFF)
+        labels.tooltip='Names each square: the ranged one follows Auto Shot, Shoot or Throw.'
+        Row(main,labels)
+        Row(Needs(Toggle('Melee Attack Indicator','melee'),off,OFF),Needs(Toggle('Ranged / Shoot / Throw Indicator','ranged'),off,OFF))
+        Row(Needs({type='toggle',text='Show Attack Squares While Off',tooltip='Keeps the squares visible while no auto attack is on.',
+            getValue=function() return s.showIdle==true end,setValue=function(v) Set('showIdle',v) end},off,OFF),
+            {type='label',text='Move it in Unlock Mode: Auto Attack / Shoot / Throw'})
+        Row({type='button',text='Reset Attack Position',tooltip='Returns the squares to their place under the HUD.',
+            disabled=function() return s.position==nil end,disabledTooltip='This option is available after moving the squares in Unlock Mode',
+            onClick=function() s.position=nil;NS.ApplyEllesmereIndicators() end},
+            NS.EllesmereSectionReset('Auto Attack Indicators',function()
+                FHKEllesmereDB.attackPulses=nil;FHKEllesmereDB.attackCueSize=nil
+                ResetIndicator('attacks',{'position'})
+            end,'Restores the Auto Attack Indicators settings to their defaults. Their position stays.'))
     end
 end
 function NS.AddEllesmereTimingOptions(Row)
@@ -553,20 +756,30 @@ function NS.AddEllesmereTimingOptions(Row)
     end
     local function Command(cmd,value) SlashCmdList.FHKTIMING(cmd..' '..tostring(value));if NS.RefreshNativeSwingRows then NS.RefreshNativeSwingRows() end end
     Row({type='slider',text='Plant Time Estimate',min=0,max=2,step=.05,
+        tooltip='Seconds you stand still before Auto Shot starts after moving. Advice only; the game clock is unchanged.',
         getValue=function() return timing.GetPlantSeconds and timing.GetPlantSeconds() or Saved().plantSeconds or 0 end,
         setValue=function(v) Command('plant',v) end},
-        {type='toggle',text='Restart Bow After Melee',getValue=function() return timing.RangedResetsOnMelee() end,
+        {type='toggle',text='Restart Bow After Melee',tooltip='A melee swing restarts the Auto Shot cycle in the timing advice.',getValue=function() return timing.RangedResetsOnMelee() end,
             setValue=function(v)
                 FHKEllesmereDB.swingCursor=FHKEllesmereDB.swingCursor or {};FHKEllesmereDB.swingCursor.resetOnMelee=v
                 Command('rangedreset',v and 'on' or 'off')
             end})
     Row({type='slider',text='Aim Window Estimate',min=.1,max=2,step=.05,
+        tooltip='Seconds before Auto Shot fires in which moving or casting would delay it.',
         getValue=function() return Saved().aimSeconds or .5 end,setValue=function(v) Command('aim',v) end},
         {type='dropdown',text='Melee Lockout Estimate',values={melee='Actual Melee Swing',fixed='Fixed Estimate'},order={'melee','fixed'},
             getValue=function() return Saved().lockoutMode or 'melee' end,setValue=function(v) Command('lockout',v) end})
     Row({type='slider',text='Fixed Lockout Estimate',min=.1,max=2,step=.05,
+        tooltip='How long a melee swing blocks the bow when the lockout is a fixed estimate.',
+        disabled=function() return (Saved().lockoutMode or 'melee')~='fixed' end,
+        disabledTooltip='This option requires Melee Lockout Estimate set to Fixed Estimate',
         getValue=function() return Saved().lockoutSeconds or 1 end,setValue=function(v) Command('lockout',v) end},
         {type='label',text='Estimates are configurable; measured swing/cast events remain authoritative'})
+    Row(NS.EllesmereSectionReset('Hunter Timing',function()
+        Command('reset','')
+        if type(FHKEllesmereDB.swingCursor)=='table' then FHKEllesmereDB.swingCursor.resetOnMelee=nil end
+    end,'Restores the plant, aim and lockout estimates and Restart Bow After Melee to their defaults.'),
+        {type='label',text='Shared with ForeverHunterKeys when it is installed'})
 end
 -- Changes to native text-slot cogs invalidate only layout, not range probes.
 local driver=CreateFrame('Frame')
@@ -579,6 +792,7 @@ local function Install()
 end
 driver:RegisterEvent('PLAYER_LOGIN');driver:RegisterEvent('ADDON_LOADED');driver:RegisterEvent('UI_SCALE_CHANGED')
 driver:SetScript('OnEvent',function(_,event)
-    if event=='UI_SCALE_CHANGED' then ApplyRange() else Install() end
+    -- Pixel geometry depends on the scale (review R9): repaint everything.
+    if event=='UI_SCALE_CHANGED' then revision=revision+1;ApplyRange() else Install() end
 end)
 Install()

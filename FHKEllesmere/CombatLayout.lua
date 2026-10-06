@@ -78,6 +78,7 @@ local function Store(write)
     if write and not all then all={};rawset(FHKEllesmereDB,'combatLayout',all) end
     local name=ProfileName()
     if write and not all[name] then all[name]={} end
+    if write and NS.EllesmereStampSnapshot then NS.EllesmereStampSnapshot('combatLayout',name) end
     return all and all[name]
 end
 local function Set(undo,area,tbl,path,key,value)
@@ -216,6 +217,11 @@ function NS.ApplyEllesmereCombatLayout()
             if bar then
                 Set(undo,'cdm',bar,path,'iconSize',spec[1]);Set(undo,'cdm',bar,path,'spacing',spec[2])
                 Set(undo,'cdm',bar,path,'anchorTo','none')
+                -- Undo finds the bar by its key, not its list position (review R11).
+                for _,field in ipairs({'iconSize','spacing','anchorTo'}) do
+                    local entry=undo.cdm and undo.cdm[path..'.'..field]
+                    if entry then entry.barKey=key end
+                end
                 Set(undo,'cdm',cdp.cdmBarPositions,'cdmBarPositions',key,Place(0,spec[3]))
             end
         end
@@ -268,11 +274,14 @@ function NS.ApplyEllesmereCombatLayout()
     end
     local getCVar,setCVar=C_CVar and C_CVar.GetCVar,C_CVar and C_CVar.SetCVar
     if getCVar and setCVar then
-        undo.cvar=undo.cvar or {}
+        -- These CVars are character-wide (review R10): one original per character, kept until
+        -- the last profile with the layout is undone.
+        local before=rawget(FHKEllesmereDB,'combatLayoutCVars')
+        if type(before)~='table' then before={};rawset(FHKEllesmereDB,'combatLayoutCVars',before) end
         for name,value in pairs(ICON_CVARS) do
             local now=getCVar(name)
             if type(now)=='string' then
-                if undo.cvar[name]==nil then undo.cvar[name]=now end
+                if before[name]==nil then before[name]=now end
                 setCVar(name,value)
             end
         end
@@ -302,7 +311,7 @@ function NS.ApplyEllesmereCombatLayout()
 end
 local function Restore(area,root,undo)
     for slot,entry in pairs(undo[area] or {}) do
-        if type(entry)=='table' and entry.key then
+        if type(entry)=='table' and entry.key and not entry.barKey then
             local t=entry.path~='' and Walk(root,entry.path) or root
             t[entry.key]=Copy(entry.value)
         end
@@ -316,7 +325,15 @@ function NS.UndoEllesmereCombatLayout()
     local _,cdp=Cooldowns()
     local _,abp=ActionBars()
     if ufp then Restore('uf',ufp,undo) end
-    if cdp then Restore('cdm',cdp,undo) end
+    if cdp then
+        for _,entry in pairs(undo.cdm or {}) do
+            if type(entry)=='table' and entry.barKey and entry.key then
+                local bar=CdmBar(cdp,entry.barKey)
+                if bar then bar[entry.key]=Copy(entry.value) end
+            end
+        end
+        Restore('cdm',cdp,undo)
+    end
     if abp then Restore('ab',abp,undo) end
     local _,rbp=ResourceBars()
     if rbp then Restore('rb',rbp,undo) end
@@ -331,9 +348,16 @@ function NS.UndoEllesmereCombatLayout()
             t[entry.key]=Copy(entry.value)
         end
     end
-    local setCVar=C_CVar and C_CVar.SetCVar
-    if setCVar then for name,value in pairs(undo.cvar or {}) do setCVar(name,value) end end
     local all=rawget(FHKEllesmereDB,'combatLayout');if all then all[ProfileName()]=nil end
+    local others=false
+    for _,record in pairs(all or {}) do if type(record)=='table' and record.applied then others=true end end
+    local setCVar=C_CVar and C_CVar.SetCVar
+    if setCVar and not others then
+        -- Older records kept the originals per profile; the character copy wins when present.
+        local before=rawget(FHKEllesmereDB,'combatLayoutCVars')
+        for name,value in pairs(type(before)=='table' and before or undo.cvar or {}) do setCVar(name,value) end
+        rawset(FHKEllesmereDB,'combatLayoutCVars',nil)
+    end
     pending=nil
     Refresh()
     return true
@@ -358,9 +382,12 @@ end
 driver:RegisterEvent('PLAYER_LOGIN')
 driver:SetScript('OnEvent',function(_,event)
     if event=='PLAYER_LOGIN' then NS.SyncEllesmereCombatFade();return end
-    if event=='PLAYER_REGEN_ENABLED' and pending and pending.profile==ProfileName() then
+    if event=='PLAYER_REGEN_ENABLED' and pending then
+        -- A request made on another profile is dropped, not replayed later (review R13).
         local todo=pending;pending=nil
-        if todo.apply then NS.ApplyEllesmereCombatLayout() elseif todo.undo then NS.UndoEllesmereCombatLayout() end
+        if todo.profile==ProfileName() then
+            if todo.apply then NS.ApplyEllesmereCombatLayout() elseif todo.undo then NS.UndoEllesmereCombatLayout() end
+        end
     end
     NS.SyncEllesmereCombatFade()
 end)

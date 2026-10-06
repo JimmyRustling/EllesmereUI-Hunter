@@ -27,13 +27,25 @@ if EUI_CLIENT_BLOCKED or not EUI or not NS then return end
 local H={}
 NS.HunterCues=H
 local FEIGN_DEATH,FEIGN_LIMIT=5384,360
+-- Not Shooting (review H4): in combat with a hostile target in shooting range and Auto Shot
+-- off for the set time (Disengage, Feign Death and Scatter Shot leave it off). Off by default.
+-- Hold times (review C6) live in the cogs; the defaults are the former fixed values.
 local DEFAULTS={ccBreak=false,feign=false,feignWarn=300,growl=false,growlSolo=true,tracking=false,beastTooltip=false,
-    petIdle=false,trapBroken=false,reactive=true,huntersMark=false,trueshot=false,rapidKilling=false}
+    petIdle=false,trapBroken=false,reactive=true,huntersMark=false,trueshot=false,rapidKilling=false,
+    notShooting=false,notShootingDelay=2,feignResistHold=2.5,trapHold=2.5,petIdleDelay=1.5}
+local LIMITS={feignWarn={60,330},notShootingDelay={1,6},feignResistHold={1,6},trapHold={1,6},petIdleDelay={.5,5}}
 function NS.EllesmereHunterCueSettings()
     if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
     local s=FHKEllesmereDB.hunterCues
     if type(s)~='table' then s={};FHKEllesmereDB.hunterCues=s end
-    for k,v in pairs(DEFAULTS) do if s[k]==nil then s[k]=v end end
+    -- Corrupted values fall back to the default (a wrong type or an out-of-range number).
+    for k,v in pairs(DEFAULTS) do
+        local cur=s[k]
+        if type(v)=='boolean' then if type(cur)~='boolean' then s[k]=v end
+        elseif LIMITS[k] then
+            if type(cur)~='number' or cur~=cur or cur<LIMITS[k][1] or cur>LIMITS[k][2] then s[k]=v end
+        elseif cur==nil then s[k]=v end
+    end
     return s
 end
 local function Plain(v) return not (issecretvalue and issecretvalue(v)) end
@@ -59,6 +71,21 @@ local function InCombat()
     return Read(_G.InCombatLockdown)~=false
 end
 local function Hunter() return select(2,Read(_G.UnitClass,'player'))=='HUNTER' end
+-- Warlock demons share the pet-generic cue (Pet Idle); everything else is hunter only.
+local function Warlock() return select(2,Read(_G.UnitClass,'player'))=='WARLOCK' end
+-- Away policy (review S2/S17): Bootstrap's NS.EllesmereAway(kind) when present; 'act' and
+-- 'buff' cues are quiet while dead, on a taxi, in a vehicle or mounted.
+local function Away(kind)
+    local fn=NS.EllesmereAway
+    if type(fn)=='function' then
+        local ok,v=pcall(fn,kind)
+        if ok then return v~=nil end
+    end
+    -- Same rule as Bootstrap: an unreadable state is not a reason.
+    return Read(_G.UnitIsDeadOrGhost,'player')==true or Read(_G.UnitOnTaxi,'player')==true or
+        Read(_G.UnitHasVehicleUI,'player')==true or Read(_G.IsMounted)==true
+end
+local HUNTER_KEYS={'ccBreak','feign','feignResist','growl','tracking','trapBroken','huntersMark','trueshot','rapidKilling','notShooting'}
 local function SpellName(id)
     local name=C_Spell and Read(C_Spell.GetSpellName,id)
     if type(name)~='string' then name=Read(_G.GetSpellInfo,id) end
@@ -89,7 +116,7 @@ function H.HeldBy(unit)
 end
 function H.CheckCC()
     local s=NS.EllesmereHunterCueSettings()
-    if not s.ccBreak or not (shooting or meleeing) or Read(_G.UnitExists,'target')~=true then Hide('ccBreak');return end
+    if not s.ccBreak or not (shooting or meleeing) or Read(_G.UnitExists,'target')~=true or Away('act') then Hide('ccBreak');return end
     local held=H.HeldBy('target')
     if held then Show('ccBreak','Stop Attack - '..held,RED,true) else Hide('ccBreak') end
 end
@@ -129,7 +156,7 @@ function H.FeignCast()
         if token~=resistToken or not NS.EllesmereHunterCueSettings().feign or not Hunter() then return end
         if Feigning()==false and Read(_G.UnitIsDeadOrGhost,'player')==false then
             Show('feignResist','Feign Death Resisted',RED,true)
-            C_Timer.After(2.5,function() if token==resistToken then Hide('feignResist') end end)
+            C_Timer.After(NS.EllesmereHunterCueSettings().feignResistHold,function() if token==resistToken then Hide('feignResist') end end)
         end
     end)
 end
@@ -146,12 +173,26 @@ function H.GrowlAutocast()
         if name and isGrowl and allowed==true and type(enabled)=='boolean' then return enabled end
     end
 end
+function H.TankPresent()
+    local inside,kind=Read(_G.IsInInstance)
+    if inside==true and (kind=='party' or kind=='raid') then return true end
+    local raid=Read(_G.IsInRaid)==true
+    local n=Read(_G.GetNumGroupMembers)
+    for i=1,(type(n)=='number' and math.min(n,40) or 0) do
+        local unit=raid and ('raid'..i) or (i<n and ('party'..i) or nil)
+        if unit and Read(_G.UnitGroupRolesAssigned,unit)=='TANK' then return true end
+    end
+    return false
+end
 function H.CheckGrowl()
     local s=NS.EllesmereHunterCueSettings()
-    if not s.growl or InCombat() or Read(_G.UnitExists,'pet')~=true or Read(_G.UnitIsDeadOrGhost,'pet')~=false then Hide('growl');return end
+    if not s.growl or InCombat() or Read(_G.UnitExists,'pet')~=true or Read(_G.UnitIsDeadOrGhost,'pet')~=false or Away('buff') then Hide('growl');return end
     local on=H.GrowlAutocast()
     local grouped=Read(_G.IsInGroup)
     if type(grouped)~='boolean' then Hide('growl');return end
+    -- Growl only fights a tank (review 2026-10-06): a two-player levelling group with no tank
+    -- needs the pet to keep threat, so the reminder waits for a dungeon or a tank in the group.
+    if grouped and not H.TankPresent() then grouped=false;if on==false then Hide('growl');return end end
     if on==true and grouped then Show('growl','Growl Is On - Turn It Off In A Group',AMBER)
     elseif on==false and not grouped and s.growlSolo then Show('growl','Growl Is Off - Turn It On Solo',AMBER)
     else Hide('growl') end
@@ -179,7 +220,7 @@ end
 function H.CheckTracking()
     local s=NS.EllesmereHunterCueSettings()
     local T=NS.HunterTalents
-    if not s.tracking or InCombat() or not (T and Read(T.Has,'improvedTracking')==true) or
+    if not s.tracking or InCombat() or Away('buff') or not (T and Read(T.Has,'improvedTracking')==true) or
         Read(_G.UnitCanAttack,'player','target')~=true or Read(_G.UnitIsDead,'target')~=false then Hide('tracking');return end
     local _,typeID=Read(_G.UnitCreatureType,'target')
     local want=Num(typeID) and TRACK[typeID]
@@ -242,12 +283,53 @@ end
 function H.CheckPetIdle(now)
     local s=NS.EllesmereHunterCueSettings()
     now=now or (GetTime and GetTime() or 0)
+    -- Quiet while the pet is on Passive on purpose (Pet On Passive covers that) or the target is
+    -- held by your crowd control (review S18).
     if not s.petIdle or not InCombat() or not HostileTarget() or Read(_G.UnitExists,'pet')~=true or
-        Read(_G.UnitIsDeadOrGhost,'pet')~=false then idleSince=nil;Hide('petIdle');return end
+        Read(_G.UnitIsDeadOrGhost,'pet')~=false or Away('act') or (NS.EllesmerePetPassive and NS.EllesmerePetPassive()==true) or
+        H.HeldBy('target')~=nil then idleSince=nil;Hide('petIdle');return end
     if Read(_G.UnitExists,'pettarget')==false then
         idleSince=idleSince or now
-        if now-idleSince>=1.5 then Show('petIdle','Pet Idle - Send It In',AMBER,true) end
+        if now-idleSince>=s.petIdleDelay then Show('petIdle','Pet Idle - Send It In',AMBER,true) end
     else idleSince=nil;Hide('petIdle') end
+end
+-- Not Shooting (review H4). Range comes from the shared range reader (cached 0.05 s);
+-- Auto Shot from START/STOP_AUTOREPEAT_SPELL and C_Spell.IsCurrentSpell(75). Any unknown
+-- answer stays quiet. Never while feigning, casting, or while your own crowd control holds
+-- the target (attacking would break it: Stop Attack covers that).
+local AUTO_SHOT=75
+local notShootSince=nil
+local function AutoShotState()
+    if shooting then return true end
+    local fn=C_Spell and C_Spell.IsCurrentSpell
+    if type(fn)~='function' then return nil end
+    local ok,v=pcall(fn,AUTO_SHOT)
+    if not ok or not Plain(v) or type(v)~='boolean' then return nil end
+    return v
+end
+-- A cast or channel in progress (or an unreadable answer) counts as busy.
+local function Busy(fn)
+    if type(fn)~='function' then return false end
+    local ok,name=pcall(fn,'player')
+    return not ok or not Plain(name) or name~=nil
+end
+local function Casting() return Busy(_G.UnitCastingInfo) or Busy(_G.UnitChannelInfo) end
+function H.InShootRange()
+    local get=NS.GetUnitRange
+    if type(get)~='function' then return nil end
+    local ok,r=pcall(get,'target')
+    if not ok or type(r)~='table' or not Plain(r.state) or type(r.state)~='string' then return nil end
+    return r.state=='shoot'
+end
+function H.CheckNotShooting(now)
+    local s=NS.EllesmereHunterCueSettings()
+    now=now or (GetTime and GetTime() or 0)
+    local quiet=not s.notShooting or not Hunter() or not InCombat() or not HostileTarget() or not Known(AUTO_SHOT) or
+        Away('act') or Feigning()~=false
+    if not quiet then quiet=AutoShotState()~=false or H.InShootRange()~=true or Casting() or H.HeldBy('target')~=nil end
+    if quiet then notShootSince=nil;Hide('notShooting');return end
+    notShootSince=notShootSince or now
+    if now-notShootSince>=s.notShootingDelay then Show('notShooting','Not Shooting - Start Auto Shot',AMBER,true) end
 end
 local REACTIVE={1495,19306} -- Mongoose Bite, Counterattack
 local glowing={} -- button -> wrapper
@@ -328,7 +410,7 @@ end
 H.Glowing=function() return glowing end
 local function CombatTick(on)
     if on and not combatTicker and C_Timer and C_Timer.NewTicker then
-        combatTicker=C_Timer.NewTicker(.5,function() H.CheckPetIdle() end)
+        combatTicker=C_Timer.NewTicker(.5,function() H.CheckPetIdle();H.CheckNotShooting() end)
     elseif not on and combatTicker then combatTicker:Cancel();combatTicker=nil end
 end
 H.CombatTick=CombatTick
@@ -355,7 +437,7 @@ function H.CheckTrap(now)
         Show('trapBroken','Trap Broken',AMBER,true)
         trapToken=trapToken+1
         local token=trapToken
-        C_Timer.After(2.5,function() if token==trapToken then Hide('trapBroken') end end)
+        C_Timer.After(s.trapHold,function() if token==trapToken then Hide('trapBroken') end end)
     end
     trap.guid,trap.expires=nil,nil
 end
@@ -366,11 +448,12 @@ end
 local BIG={elite=true,rareelite=true,worldboss=true}
 function H.CheckMark()
     local s=NS.EllesmereHunterCueSettings()
-    if not s.huntersMark or not HostileTarget() or not Known(1130) then Hide('huntersMark');return end
+    if not s.huntersMark or not HostileTarget() or not Known(1130) or Away('act') then Hide('huntersMark');return end
     local class=Read(_G.UnitClassification,'target')
     if not class or not BIG[class] then Hide('huntersMark');return end
     local name=SpellName(1130)
-    local mark,readable=Aura('target',name,'HARMFUL|PLAYER')
+    -- Any hunter's Mark counts (review S16): never ask to overwrite a partner's.
+    local mark,readable=Aura('target',name,'HARMFUL')
     if readable and mark==nil then Show('huntersMark',name,AMBER) else Hide('huntersMark') end
 end
 local function PlayerAura(id)
@@ -383,7 +466,7 @@ end
 function H.CheckBuffs()
     local s=NS.EllesmereHunterCueSettings()
     local T=NS.HunterTalents
-    if s.trueshot and not InCombat() and T and Read(T.Has,'trueshotAura')==true and PlayerAura(1299346)==false then
+    if s.trueshot and not InCombat() and not Away('buff') and T and Read(T.Has,'trueshotAura')==true and PlayerAura(1299346)==false then
         Show('trueshot',SpellName(1299346) or 'Trueshot Aura',AMBER)
     else Hide('trueshot') end
     if s.rapidKilling and T and Read(T.Has,'rapidKilling')==true and PlayerAura(415405)==true then
@@ -397,10 +480,17 @@ end
 -------------------------------------------------------------------------------
 local driver
 local function All()
+    if not Hunter() then
+        for i=1,#HUNTER_KEYS do Hide(HUNTER_KEYS[i]) end
+        local s=NS.EllesmereHunterCueSettings()
+        CombatTick(s.petIdle and Warlock() and InCombat())
+        H.CheckPetIdle();H.CheckReactive()
+        return
+    end
     H.CheckCC();H.CheckFeign();H.CheckGrowl();H.CheckTracking();H.CheckMark();H.CheckBuffs();H.CheckTrap()
     local s=NS.EllesmereHunterCueSettings()
-    CombatTick(s.petIdle and InCombat())
-    H.CheckPetIdle();H.CheckReactive()
+    CombatTick((s.petIdle or s.notShooting) and InCombat())
+    H.CheckPetIdle();H.CheckNotShooting();H.CheckReactive()
 end
 function H.OnEvent(_,event,unit,_,spellID)
     if event=='UNIT_SPELLCAST_SUCCEEDED' then
@@ -408,6 +498,7 @@ function H.OnEvent(_,event,unit,_,spellID)
         return
     end
     if event=='PLAYER_REGEN_DISABLED' then combatFlag=true elseif event=='PLAYER_REGEN_ENABLED' then combatFlag=false end
+    if event=='PLAYER_TARGET_CHANGED' then notShootSince=nil;Hide('notShooting') end
     if event=='UNIT_FLAGS' then H.CheckFeign();return end
     if event=='START_AUTOREPEAT_SPELL' then shooting=true elseif event=='STOP_AUTOREPEAT_SPELL' then shooting=false
     elseif event=='PLAYER_ENTER_COMBAT' then meleeing=true elseif event=='PLAYER_LEAVE_COMBAT' then meleeing=false end
@@ -419,6 +510,7 @@ function H.OnEvent(_,event,unit,_,spellID)
     if event=='UNIT_TARGET' then H.CheckPetIdle();return end
     All()
 end
+local PET_ONLY={petIdle=true}
 function NS.SyncEllesmereHunterCues()
     local s=NS.EllesmereHunterCueSettings()
     if driver then driver:UnregisterAllEvents() end
@@ -428,10 +520,11 @@ function NS.SyncEllesmereHunterCues()
     shooting=Read(C_Spell and C_Spell.IsCurrentSpell,75)==true
     meleeing=Read(C_Spell and C_Spell.IsCurrentSpell,6603)==true
     if hunter and s.beastTooltip then HookTooltip() end
-    local any=hunter and (s.ccBreak or s.feign or s.growl or s.tracking or s.petIdle or s.trapBroken or s.reactive or s.huntersMark or s.trueshot or s.rapidKilling)
+    local any=hunter and (s.ccBreak or s.feign or s.growl or s.tracking or s.petIdle or s.trapBroken or s.reactive or s.huntersMark or s.trueshot or s.rapidKilling or s.notShooting)
+        or not hunter and Warlock() and s.petIdle
     if not any then
-        for _,key in ipairs({'ccBreak','feign','feignResist','growl','tracking','petIdle','trapBroken','huntersMark','trueshot','rapidKilling'}) do Hide(key) end
-        CombatTick(false);idleSince=nil;trap.guid,trap.expires=nil,nil;trapToken=trapToken+1
+        for _,key in ipairs({'ccBreak','feign','feignResist','growl','tracking','petIdle','trapBroken','huntersMark','trueshot','rapidKilling','notShooting'}) do Hide(key) end
+        CombatTick(false);idleSince=nil;notShootSince=nil;trap.guid,trap.expires=nil,nil;trapToken=trapToken+1
         resistToken=resistToken+1;feignAt=nil
         if feignTicker then feignTicker:Cancel();feignTicker=nil end
         H.CheckReactive();return
@@ -439,10 +532,13 @@ function NS.SyncEllesmereHunterCues()
     if not driver then driver=CreateFrame('Frame');driver:SetScript('OnEvent',H.OnEvent) end
     local function Unit(event,...) if driver.RegisterUnitEvent then driver:RegisterUnitEvent(event,...) else driver:RegisterEvent(event) end end
     for _,event in ipairs({'PLAYER_ENTERING_WORLD','PLAYER_REGEN_ENABLED','PLAYER_REGEN_DISABLED','PLAYER_TARGET_CHANGED'}) do driver:RegisterEvent(event) end
+    -- A warlock registers only what Pet Idle needs.
+    if not hunter then s=PET_ONLY end
     if s.ccBreak then
         for _,event in ipairs({'START_AUTOREPEAT_SPELL','STOP_AUTOREPEAT_SPELL','PLAYER_ENTER_COMBAT','PLAYER_LEAVE_COMBAT'}) do driver:RegisterEvent(event) end
         Unit('UNIT_AURA','target','player')
     end
+    if s.notShooting then driver:RegisterEvent('START_AUTOREPEAT_SPELL');driver:RegisterEvent('STOP_AUTOREPEAT_SPELL') end
     if s.feign then Unit('UNIT_SPELLCAST_SUCCEEDED','player');Unit('UNIT_AURA','player','target');Unit('UNIT_FLAGS','player') end
     if s.growl then driver:RegisterEvent('PET_BAR_UPDATE');driver:RegisterEvent('GROUP_ROSTER_UPDATE');Unit('UNIT_PET','player') end
     if s.tracking then driver:RegisterEvent('MINIMAP_UPDATE_TRACKING');driver:RegisterEvent('SPELLS_CHANGED') end
@@ -456,35 +552,92 @@ function NS.SyncEllesmereHunterCues()
 end
 if NS.HunterTalents and NS.HunterTalents.OnChange then NS.HunterTalents.OnChange(function() if driver then H.CheckTracking() end end) end
 
+-- Previews (review C5): one sample per cue for 3 s, then the live checks take over again.
+local SAMPLES={ccBreak={'Stop Attack - Freezing Trap Effect','red',true},feign={'Cancel Feign Death (30s)','red',true},
+    growl={'Growl Is On - Turn It Off In A Group','amber'},tracking={'Track Beasts (+5%)','amber'},
+    petIdle={'Pet Idle - Send It In','amber',true},trapBroken={'Trap Broken','amber',true},huntersMark={"Hunter's Mark",'amber'},
+    trueshot={'Trueshot Aura','amber'},rapidKilling={'Rapid Killing - Next Shot +20%','accent'},
+    notShooting={'Not Shooting - Start Auto Shot','amber',true}}
+local previewTokens={}
+function H.Preview(key)
+    local sample=SAMPLES[key]
+    if not sample then return end
+    previewTokens[key]=(previewTokens[key] or 0)+1
+    local token=previewTokens[key]
+    local colour=sample[2]=='red' and RED or AMBER
+    if sample[2]=='accent' and EUI.GetAccentColor then colour={EUI.GetAccentColor()} end
+    Show(key,sample[1]..' (Preview)',colour,sample[3])
+    if C_Timer and C_Timer.After then
+        C_Timer.After(3,function()
+            if token~=previewTokens[key] then return end
+            Hide(key)
+            if driver then All() end
+        end)
+    end
+end
+
 function NS.AddEllesmereHunterCueOptions(Row)
+    -- Hunters get every cue; warlocks the pet-generic Pet Idle (the section shows as PET CUES);
+    -- other classes nothing. An unreadable class shows everything.
+    local class=select(2,Read(_G.UnitClass,'player'))
+    local hunter=class=='HUNTER' or type(class)~='string'
+    if not hunter and class~='WARLOCK' then return end
+    local PetRow=Row
+    if not hunter then Row=function() end end
     local s=NS.EllesmereHunterCueSettings()
     local function Set(key,v) s[key]=v;NS.SyncEllesmereHunterCues();if EUI.RefreshPage then EUI:RefreshPage() end end
+    -- A seconds slider for a cog (review C6): rejects values outside its limits.
+    local function Seconds(label,key,step,tip)
+        local l=LIMITS[key]
+        return {type='slider',label=label,min=l[1],max=l[2],step=step,tooltip=tip,get=function() return s[key] end,
+            set=function(v) if type(v)=='number' and v>=l[1] and v<=l[2] then s[key]=v end end}
+    end
+    -- Each lane cue: its lane and sound in the cog (review C3) and a preview eye (review C5).
+    local function Cue(cfg,key)
+        cfg.preview={tip='Preview the cue',duration=3,show=function() H.Preview(key) end,
+            disabled=function() return not s[key] end,disabledTooltip=cfg.text}
+        if NS.AttachEllesmereWarningOverrides then NS.AttachEllesmereWarningOverrides(cfg,key,function() return s[key]==true end) end
+        return cfg
+    end
     local feign={type='toggle',text='Feign Death Warnings',tooltip='Feign Death Resisted when the cast lands but you are not feigning, and a countdown before Feign Death kills you after 6 minutes.',
         getValue=function() return s.feign end,setValue=function(v) Set('feign',v) end}
     feign.cog={title='Feign Death',disabled=function() return not s.feign end,disabledTooltip='Feign Death Warnings',rows={
         {type='slider',label='Countdown From (sec)',min=60,max=330,step=30,tooltip='Seconds into Feign Death when the countdown starts. It turns red for the last 30 seconds.',
-            get=function() return s.feignWarn end,set=function(v) s.feignWarn=v end}}}
-    local growl={type='toggle',text='Growl Reminder',tooltip='Out of combat: Growl autocast on while in a group (it takes threat from the tank).',
+            get=function() return s.feignWarn end,set=function(v) if type(v)=='number' and v>=60 and v<=330 then s.feignWarn=v end end},
+        Seconds('Resisted Cue Hold (sec)','feignResistHold',.5,'How long Feign Death Resisted stays on screen.')}}
+    local growl={type='toggle',text='Growl Reminder',tooltip='Out of combat: Growl autocast on in a dungeon or a group with a tank (it takes threat from the tank).',
         getValue=function() return s.growl end,setValue=function(v) Set('growl',v) end}
     growl.cog={title='Growl Reminder',disabled=function() return not s.growl end,disabledTooltip='Growl Reminder',rows={
         {type='toggle',label='Also When Off While Solo',tooltip='Also reminds you when Growl autocast is off while solo, where your pet should hold the mob.',
             get=function() return s.growlSolo end,set=function(v) Set('growlSolo',v) end}}}
-    Row({type='toggle',text='Stop Attack On Your Crowd Control',tooltip='Red, above your character: Auto Shot or melee is on while your target is held by your own Freezing Trap, Scatter Shot, Scare Beast or Wyvern Sting.',
-        getValue=function() return s.ccBreak end,setValue=function(v) Set('ccBreak',v) end},feign)
-    Row(growl,{type='toggle',text='Tracking Reminder',tooltip='With Improved Tracking learned, names the Track spell that matches your target out of combat (+5% damage to that type).',
-        getValue=function() return s.tracking end,setValue=function(v) Set('tracking',v) end})
-    Row({type='toggle',text='Pet Idle',tooltip='In combat with a hostile target: your pet has had no target for 1.5 seconds.',
-        getValue=function() return s.petIdle end,setValue=function(v) Set('petIdle',v) end},
-        {type='toggle',text='Trap Broken',tooltip='Your Freezing Trap came off your target well before it would have run out.',
-        getValue=function() return s.trapBroken end,setValue=function(v) Set('trapBroken',v) end})
+    Row(Cue({type='toggle',text='Stop Attack On Your Crowd Control',tooltip='Red, above your character: Auto Shot or melee is on while your target is held by your own Freezing Trap, Scatter Shot, Scare Beast or Wyvern Sting.',
+        getValue=function() return s.ccBreak end,setValue=function(v) Set('ccBreak',v) end},'ccBreak'),Cue(feign,'feign'))
+    Row(Cue(growl,'growl'),Cue({type='toggle',text='Tracking Reminder',tooltip='With Improved Tracking learned, names the Track spell that matches your target out of combat (+5% damage to that type).',
+        getValue=function() return s.tracking end,setValue=function(v) Set('tracking',v) end},'tracking'))
+    local idle={type='toggle',text='Pet Idle',tooltip='In combat with a hostile target: your pet has had no target for the time set in the cog (1.5 seconds by default).',
+        getValue=function() return s.petIdle end,setValue=function(v) Set('petIdle',v) end}
+    idle.cog={title='Pet Idle',disabled=function() return not s.petIdle end,disabledTooltip='Pet Idle',rows={
+        Seconds('Idle Before Cue (sec)','petIdleDelay',.5,'How long your pet has no target before the cue shows.')}}
+    local trapCue={type='toggle',text='Trap Broken',tooltip='Your Freezing Trap came off your target well before it would have run out.',
+        getValue=function() return s.trapBroken end,setValue=function(v) Set('trapBroken',v) end}
+    trapCue.cog={title='Trap Broken',disabled=function() return not s.trapBroken end,disabledTooltip='Trap Broken',rows={
+        Seconds('Cue Hold (sec)','trapHold',.5,'How long Trap Broken stays on screen.')}}
+    Row(Cue(idle,'petIdle'),Cue(trapCue,'trapBroken'))
+    if not hunter then PetRow(idle,EUI.BlankRowCfg and EUI.BlankRowCfg() or {type='label',text=''}) end
     Row({type='toggle',text='Mongoose Bite / Counterattack Glow',tooltip='While Mongoose Bite (after a dodge) or Counterattack (after a parry) can be cast, its action buttons glow like a proc, using your Action Bars Proc Glow style and color.',
         getValue=function() return s.reactive end,setValue=function(v) Set('reactive',v) end},
-        {type='toggle',text='Hunter\'s Mark On Elites',tooltip='An elite, rare elite or boss target without your Hunter\'s Mark.',
-        getValue=function() return s.huntersMark end,setValue=function(v) Set('huntersMark',v) end})
-    Row({type='toggle',text='Trueshot Aura Missing',tooltip='Out of combat, with the Trueshot Aura talent learned, when the aura is not on you.',
-        getValue=function() return s.trueshot end,setValue=function(v) Set('trueshot',v) end},
-        {type='toggle',text='Rapid Killing Proc',tooltip='With the Rapid Killing talent: shows while your next Shot deals 20% more damage.',
-        getValue=function() return s.rapidKilling end,setValue=function(v) Set('rapidKilling',v) end})
+        Cue({type='toggle',text='Hunter\'s Mark On Elites',tooltip='An elite, rare elite or boss target without your Hunter\'s Mark.',
+        getValue=function() return s.huntersMark end,setValue=function(v) Set('huntersMark',v) end},'huntersMark'))
+    Row(Cue({type='toggle',text='Trueshot Aura Missing',tooltip='Out of combat, with the Trueshot Aura talent learned, when the aura is not on you.',
+        getValue=function() return s.trueshot end,setValue=function(v) Set('trueshot',v) end},'trueshot'),
+        Cue({type='toggle',text='Rapid Killing Proc',tooltip='With the Rapid Killing talent: shows while your next Shot deals 20% more damage.',
+        getValue=function() return s.rapidKilling end,setValue=function(v) Set('rapidKilling',v) end},'rapidKilling'))
+    local notShooting={type='toggle',text='Not Shooting',
+        tooltip='In combat, above your character: your hostile target is in shooting range and Auto Shot has been off for the time set in the cog (after Disengage, Feign Death or Scatter Shot). Quiet while you cast, feign, or hold the target with your own crowd control.',
+        getValue=function() return s.notShooting end,setValue=function(v) Set('notShooting',v) end}
+    notShooting.cog={title='Not Shooting',disabled=function() return not s.notShooting end,disabledTooltip='Not Shooting',rows={
+        Seconds('Not Shooting For (sec)','notShootingDelay',.5,'How long Auto Shot is off in shooting range before the cue shows.')}}
+    Row(Cue(notShooting,'notShooting'),{type='label',text='Uses the range indicator\'s shooting range'})
     Row({type='toggle',text='Beast Tooltip',tooltip='On beasts: family, attack speed (fast ones in gold) and whether their level lets you tame them. Forever allows no taming above your level.',
         getValue=function() return s.beastTooltip end,setValue=function(v) Set('beastTooltip',v) end},
         {type='label',text='Level only: no API says whether a beast is tameable'})

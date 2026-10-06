@@ -103,7 +103,7 @@ local function Paint()
         end
     end
 end
-NS.PaintEllesmereResourceBars=Paint
+NS.PaintEllesmereResourceBars=function() Paint();if NS.SyncEllesmereResourceSweep then NS.SyncEllesmereResourceSweep() end end
 function NS.AddEllesmereResourceTextCog(row,kind,position)
     if not row or not row._leftRegion or not EUI.BuildInlineCog then return end
     local s=Settings(kind)
@@ -123,10 +123,16 @@ for _,event in ipairs({'UNIT_HEALTH','UNIT_MAXHEALTH','UNIT_POWER_UPDATE','UNIT_
     if driver.RegisterUnitEvent then driver:RegisterUnitEvent(event,'player') else driver:RegisterEvent(event) end
 end
 driver:SetScript('OnEvent',function(_,event,unit) if not event:find('^UNIT_') or unit=='player' then Paint() end end)
-local elapsed=0
--- Player health/power events repaint at once; the sweep only catches settings changes (audit F35).
-driver:SetScript('OnUpdate',function(_,dt)
+local elapsed,sweeping=0,false
+-- Player health/power events repaint at once; the sweep only catches font and settings changes
+-- for the text slots (audit F35), so it runs only while a slot is on (review AP8: zero cost off).
+local function Sweep(_,dt)
     elapsed=elapsed+dt
     if elapsed<(NS.EllesmereSweepInterval and NS.EllesmereSweepInterval() or .15) then return end
     elapsed=0; Paint()
-end)
+end
+function NS.SyncEllesmereResourceSweep()
+    local on=Settings('health').enabled==true or Settings('primary').enabled==true
+    if on~=sweeping then sweeping=on;driver:SetScript('OnUpdate',on and Sweep or nil) end
+end
+NS.SyncEllesmereResourceSweep()

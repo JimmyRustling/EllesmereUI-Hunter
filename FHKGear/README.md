@@ -1,15 +1,17 @@
 # FHK Gear
 
-Upgrade scores, quest reward choice and auto-equip for levelling, as a **Gear** section in the EllesmereUI sidebar. It replaces AutoGear: once you're happy, disable AutoGear (the Automation page has a button).
+Upgrade scores, quest reward choice and auto-equip for levelling, as a **Gear** section in the EllesmereUI sidebar. It replaces AutoGear: once you're happy, disable AutoGear (the Automation page has a button; its dialog lists what AutoGear was doing and which Gear toggle covers it). On first login Gear says in chat which AutoGear weight scales it copied.
 
-- **Mark Only by default.** You get a tooltip line on every piece of gear, and quest rewards that are upgrades get a border. When nothing is an upgrade, the best vendor value gets the greed colour instead.
+- **Mark Only by default.** You get a tooltip line on every piece of gear, and quest rewards that are upgrades get a border. When nothing is an upgrade, the best vendor value gets the greed color instead.
+  - The tooltip names the item an upgrade replaces ("+2.5 upgrade over Hunting Bow").
+  - Gear above your level says what it will be: "upgrade at level 30". Gear you can never use gets no line (the red text already says why).
 - **Automatic actions, each with its own toggle:**
   - auto-equip upgrades;
-  - auto-pick quest rewards;
-  - auto-roll on loot (Need and Greed policies are separate).
-  - A status line says what Gear is doing right now.
-- **Pop-ups:** Ellesmere-style cards for what Gear did (equipped, quest reward, roll), and Upgrade Found cards with Equip and Never Equip. Move them in Ellesmere Unlock Mode.
-- **Auto-Equip Up To:** a rarity cap from Grey to Legendary, in Blizzard's quality colours. The default is Green. Items above the cap are still marked as upgrades.
+  - auto-pick quest rewards (hold Shift as the reward window opens to choose yourself);
+  - auto-roll on loot (Need and Greed policies are separate). Optional etiquette rules, all off by default: Minimum Need Gain, Need Only My Armor Type, Need Only My Main Stat. An upgrade they rule out is Greed. Non-gear loot is left to you unless Greed on Non-Gear Loot is on.
+  - A status line says what Gear is doing right now, and which spec weights it uses (chosen, detected, or no spec detected).
+- **Pop-ups:** Ellesmere-style cards for what Gear did (equipped, quest reward, roll), and Upgrade Found cards with Equip and Never Equip. Move them in Ellesmere Unlock Mode. Each action is reported once: by its card, or by a chat line when no card shows (Chat Messages).
+- **Auto-Equip Up To:** a rarity cap from Grey to Legendary, in Blizzard's quality colors. The default is Green. Items above the cap are still marked as upgrades. **Rarity Cap: Bind on Equip Only** (off) lets soulbound upgrades, such as a blue quest reward, through the cap.
 - **Bind on equip, as a pair:**
   - **Auto-Equip Bind-on-Equip** follows the rarity cap.
   - **Auto-Confirm Bind Prompt** accepts the prompt only for the item Gear is equipping. It is off by default.
@@ -22,8 +24,10 @@ Upgrade scores, quest reward choice and auto-equip for levelling, as a **Gear** 
 - **Stat weights:** built in per class and spec. You can set your own per spec and per phase (Levelling / Endgame), and import or export Pawn scales.
 - **Markers:**
   - bag icons (Blizzard and Ellesmere bags), loot-roll marks and character-slot marks, all off by default;
-  - styles, colour swatches, size, opacity and placement;
-  - a live preview at the top of the page.
+  - styles, color swatches, size, opacity and placement;
+  - a live preview at the top of the page;
+  - **Color-Blind Markers**: a blue arrow for upgrades and an orange coin for greed, instead of a green border that looks like the uncommon-quality glow;
+  - **Text Colors**: a picker for every tooltip, status and pop-up color, with a Reset.
 - **Bags:**
   - Empty bag slots are filled with bigger general bags, one each. Bags with items in them stay manual.
   - Reagent bags go only in the reagent slot.

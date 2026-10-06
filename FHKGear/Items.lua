@@ -225,11 +225,16 @@ function Items.Read(link, bag, slot)
         if not ready or not rawReady then info.missing=true; info.reason='Tooltip or stats pending'; Request(id); return info end
         local canUse = Try(C_PlayerInfo and C_PlayerInfo.CanUseItem,id)
         if Plain(canUse) and canUse == false then info.usable=false;info.reason='Client requirements not met' end
+        local otherBlock = false
         for i, line in ipairs(lines) do
             local left, right = line[1], line[2]
             if i > 1 and (line[3] or line[4]) and not (type(left) == 'string' and left:find('Durability', 1, true)) then
                 info.usable = false
                 info.reason = (line[3] and left) or right
+                -- "Requires Level 30" in red is a block that ends at that level (review G11); anything else stays one.
+                local text = line[3] and left or right
+                local n = S.Text(text) and tonumber(text:lower():match('level%s+(%d+)'))
+                if not (n and info.reqLevel and n == info.reqLevel) then otherBlock = true end
             end
             if type(left) == 'string' then
                 if left == ITEM_SOULBOUND or left == ITEM_BIND_ON_PICKUP then info.bound = 'bop'
@@ -294,6 +299,7 @@ function Items.Read(link, bag, slot)
             end
         end
         info.enchantStats=enchantTotals
+        info.levelOnly = not info.usable and not otherBlock and (info.reqLevel or 0) > ns.Level() or nil
         for stat,v in pairs(lineTotals) do
             if not fromStats[stat] or info.rawRatings[stat] then info.stats[stat]=v;info.lineStats[stat]=true end
         end

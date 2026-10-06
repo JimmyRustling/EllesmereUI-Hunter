@@ -150,6 +150,22 @@ function W.ClassSpec()
     if not (spec and ns.DefaultWeights[class] and ns.DefaultWeights[class][spec]) then spec = W.DetectedSpec(class) end
     return class, spec
 end
+-- What the status line shows (review G1): the spec in use and how it was found.
+-- 'chosen' = the Spec dropdown; 'detected' = the client's specialization; 'no spec detected' = class defaults.
+function W.SpecLabel()
+    local _, spec = W.ClassSpec()
+    local chosen = ns.Char().spec
+    local how = chosen and chosen == spec and 'chosen' or spec ~= 'None' and 'detected' or 'no spec detected'
+    return spec == 'None' and 'No Spec' or spec, how
+end
+-- Your own weights exist for this class and spec in some phase (review G9: Phase only switches those).
+function W.HasCustomPhases(class, spec)
+    for _, phase in ipairs({'levelling', 'endgame'}) do
+        local custom = W.Custom(class, spec, phase)
+        if custom and next(custom) then return true end
+    end
+    return false
+end
 function W.Phase()
     local char = ns.Char()
     if char.phase == 'levelling' or char.phase == 'endgame' then return char.phase end
@@ -217,7 +233,7 @@ W.PAWN = PAWN
 local OWN = {}
 for _, stat in ipairs(W.STATS) do OWN[stat] = stat end
 -- Returns weights, scale name (or nil), or nil and a reason. Accepts Pawn stat names and our own.
-function W.Parse(text)
+function W.Parse(text, minimum)
     if not S.Text(text) or text == '' or #text > 32768 then return nil, 'Paste a weight scale or stat=value pairs.' end
     local name = text:match('Pawn:%s*v%d+:%s*"([^"]+)"')
     local native = text:match('^FHKW:2:') ~= nil
@@ -229,14 +245,17 @@ function W.Parse(text)
         local key, number = entry:match('^%s*([%w]+)%s*=%s*(%S+)%s*$')
         if not key then return nil, 'Use complete comma-separated stat=value entries.' end
         local stat, value = (native and OWN[key] or PAWN[key] or OWN[key]), tonumber(number)
-        if not S.Number(value) or value < 0 or value > 100000 then return nil, 'Invalid weight for ' .. key .. '.' end
+        -- Unknown keys are skipped before their values are checked (review GU4): Pawn scales carry
+        -- entries such as IsPlate=-1000000 that are not stats.
+        if stat and (not S.Number(value) or value < 0 or value > 100000) then return nil, 'Invalid weight for ' .. key .. '.' end
         if stat then
             if out[stat] ~= nil then return nil, 'Duplicate stat: ' .. stat .. '.' end
             out[stat] = value
             count = count + 1
         end
     end
-    if count < 2 then return nil, 'No usable weights found: include at least two stats.' end
+    minimum = minimum or 2
+    if count < minimum then return nil, minimum < 2 and 'No usable values found.' or 'No usable weights found: include at least two stats.' end
     if not native then
         if out.DPS and not (out.RangedDPS or out.MeleeDPS) then out.RangedDPS, out.MeleeDPS = out.DPS, out.DPS end
         out.DPS = nil

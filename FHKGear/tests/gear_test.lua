@@ -246,7 +246,7 @@ ns.Weights.Custom('HUNTER', 'None', 'levelling').RangedDPS = nil; ns.Changed()
 -- Tooltip line ----------------------------------------------------------------------------------
 local lines = {}
 local tip = {AddLine = function(_, t) lines[#lines + 1] = t end}
-ns.AddTooltipLine(tip, 'item:2'); eq(lines[1], 'Gear: +2.5 upgrade', 'tooltip shows the upgrade amount')
+ns.AddTooltipLine(tip, 'item:2'); eq(lines[1], 'Gear: +2.5 upgrade over Laminated Recurve Bow', 'tooltip shows the upgrade amount and names the replaced item (G11)')
 ns.AddTooltipLine(tip, 'item:1'); eq(lines[2], 'Gear: matches worn gear, score 11.5', 'link-only tooltip does not claim physical identity')
 ns.AddTooltipLine(tip, 'item:9'); eq(#lines, 2, 'non-gear gets no tooltip line')
 local invBefore = inventoryCalls
@@ -354,8 +354,10 @@ local candidates = ns.Engine.BagUpgrades(nil, true)
 eq(#candidates, 1, 'automatic scan keeps the eligible upgrade for a shared target slot')
 eq(candidates[1].info.id, 11, 'flagged epic and blue do not crowd out an eligible green')
 c.autoEquipMaxQuality = 3; ns.Changed()
+eq(ns.Engine.BagUpgrades(nil, true)[1].info.id, 27, 'Bind on Equip Up To (default Uncommon) keeps a blue BoE in the bags under a blue limit')
+c.equipBoEMaxQuality = 3; ns.Changed()
 candidates = ns.Engine.BagUpgrades(nil, true)
-eq(candidates[1].info.id, 28, 'blue limit with Auto-Equip Bind-on-Equip on permits the better blue BoE')
+eq(candidates[1].info.id, 28, 'blue limit with Bind on Equip Up To Rare permits the better blue BoE')
 c.equipBoE = false; ns.Changed()
 eq(ns.Engine.BagUpgrades(nil, true)[1].info.id, 27, 'Auto-Equip Bind-on-Equip off keeps every BoE in the bags')
 c.equipBoE = true; ns.Changed()
@@ -534,6 +536,15 @@ assert(loadfile('tests/regression.lua'))({ns=ns,eq=eq,near=near,Fire=Fire,ITEMS=
     time=function() return now end,setTime=function(value) now=value end,
     printed=function() return printed end,loaded=loaded,core=core,getStats=function() return statCalls end,
     setNeed=function(value) canNeed=value end,getPopup=function() return inputPopup end})
+-- 0.5.3 (class kits row H): review items G1-G4, G9-G14 and D8.
+assert(loadfile('tests/release_053.lua'))({ns=ns,eq=eq,near=near,Fire=Fire,ITEMS=ITEMS,missing=missing,options=opt,spec=spec,
+    getRows=function() return rows end,clearRows=function() rows={} end,
+    setBags=function(value) bags=value end,setEquipped=function(value) equipped=value end,getEquipped=function() return equipped end,
+    setChoices=function(value) choices=value end,setRoll=function(value) rollLink=value end,
+    getReward=function() return rewardTaken end,clearReward=function() rewardTaken=nil end,
+    getRolled=function() return rolled end,setLevel=function(value) level=value end,
+    setCursor=function(value) cursor=value end,time=function() return now end,setTime=function(value) now=value end,
+    printed=function() return printed end,loaded=loaded,core=core,setNeed=function(value) canNeed=value end})
 
 print = function(s) io.write(tostring(s), '\n') end
 print(('PASS: %d gear checks (E2 mocked; no in-game verification)'):format(checks))

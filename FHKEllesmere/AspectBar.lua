@@ -75,10 +75,11 @@ function A.RefreshAura()
     for _,key in ipairs(L.ORDER) do if known[key] then
         local fn=C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName
         local ok,aura
-        if type(fn)=='function' and names[key] then ok,aura=Call(fn,'player',names[key],'HELPFUL')
+        -- HELPFUL|PLAYER (review): another hunter's Pack or Wild buffs the whole party under the same name.
+        if type(fn)=='function' and names[key] then ok,aura=Call(fn,'player',names[key],'HELPFUL|PLAYER')
         else ok,aura=Call(C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID,ids[key]) end
         if not ok or not Plain(aura) or aura~=nil and not Table(aura) then auraReady=false
-        elseif aura then active=key end
+        elseif aura and not (Plain(aura.sourceUnit) and type(aura.sourceUnit)=='string' and aura.sourceUnit~='player') then active=key end
     end end
 end
 function A.Active() return active end
@@ -131,10 +132,13 @@ end
 local function HostileTarget()
     return Yes(Read(_G.UnitExists,'target')) and Yes(Read(_G.UnitCanAttack,'player','target')) and Read(_G.UnitIsDead,'target')==false
 end
+-- Set by the combat events: PLAYER_REGEN_DISABLED fires before InCombatLockdown() is true (review).
+local combatFlag=nil
 function A.Inputs(now)
     now=now or Now()
     local s=cfg or NS.EllesmereAspectSettings()
     local combat=Read(_G.InCombatLockdown)
+    if combatFlag==true then combat=true end
     local hostile=HostileTarget()
     local range
     if hostile then
@@ -148,7 +152,7 @@ function A.Inputs(now)
         onYou=Yes(Read(_G.UnitIsUnit,'targettarget','player')),dead=Yes(dead),
         mounted=Yes(mounted) or Yes(taxi) or Yes(Read(_G.UnitInVehicle,'player')),
         unknown=not auraReady or type(combat)~='boolean' or type(dead)~='boolean' or type(mounted)~='boolean' or type(taxi)~='boolean',
-        moving=movingSince~=nil and now-movingSince>=3,indoors=Read(_G.IsIndoors)~=false,
+        moving=movingSince~=nil and now-movingSince>=3,indoors=Read(_G.IsIndoors)~=false,swimming=Read(_G.IsSwimming)==true,
         active=active,known=known,style=Style(s,now),travel=s.travel,monkey=s.monkey}
 end
 function A.Advice(now)
@@ -293,6 +297,14 @@ function A.Layout()
     local combatOnly=cfg.visibility=='combat' or cfg.visibility=='alert'
     if type(RegisterStateDriver)=='function' then RegisterStateDriver(holder,'visibility',combatOnly and '[combat] show; hide' or 'show') else holder:Show() end
     holder:SetAttribute('hover',cfg.visibility=='mouseover');holder:SetAlpha((cfg.visibility=='mouseover' or cfg.visibility=='alert') and 0 or 1)
+    -- Only When Wrong is invisible most of the time, so it takes no clicks or hovers (review):
+    -- an invisible bar button would cast an aspect, an invisible icon would swallow world clicks.
+    local mouse=cfg.visibility~='alert'
+    holder:EnableMouse(mouse)
+    if root then root:EnableMouse(mouse) end
+    if flyout then flyout:EnableMouse(mouse) end
+    for _,b in ipairs(buttons) do b:EnableMouse(mouse) end
+    if not mouse then holder:SetAttribute('expand',false) end
     Position()
 end
 function A.Paint(now)
@@ -365,6 +377,8 @@ local events={'PLAYER_ENTERING_WORLD','PLAYER_REGEN_ENABLED','PLAYER_REGEN_DISAB
     'UPDATE_BINDINGS','UPDATE_MACROS','PLAYER_MOUNT_DISPLAY_CHANGED','SPELL_UPDATE_COOLDOWN',
     'PLAYER_DEAD','PLAYER_ALIVE','PLAYER_UNGHOST','PLAYER_CONTROL_GAINED','PLAYER_CONTROL_LOST'}
 function A.OnEvent(_,event,unit,kind)
+    if event=='PLAYER_REGEN_DISABLED' then combatFlag=true elseif event=='PLAYER_REGEN_ENABLED' then combatFlag=false
+    elseif event=='PLAYER_ENTERING_WORLD' then combatFlag=nil end
     if event=='PLAYER_LOGIN' then NS.SyncEllesmereAspects();return end
     if event=='PLAYER_REGEN_ENABLED' and pending then NS.SyncEllesmereAspects();return end
     if not enabled then return end
@@ -477,7 +491,7 @@ function NS.AddEllesmereAspectOptions(Row)
         Drop('Aspect Visibility','visibility',{always='Always',combat='In Combat',mouseover='Mouseover',alert='Only When Wrong'},{'always','combat','mouseover','alert'},Off))
     local colors={}
     for _,key in ipairs(L.ORDER) do colors[#colors+1]=Swatch(key,key:gsub('^%l',string.upper)..' Edge Color') end
-    Row(Toggle('Click Advice Out of Combat','click',function() return Off() or Settings().display~='icon' end),
+    Row(Toggle('Click Advice Out of Combat','click',function() return Off() or Settings().display~='icon' or Settings().visibility=='combat' or Settings().visibility=='alert' end),
         {type='multiSwatch',text='Aspect Colors',swatches=colors,disabled=Off,disabledTooltip='Aspect Element'})
     Row({type='label',text='Move Aspects in Unlock Mode'},
         {type='button',text='Reset Aspect Colors',onClick=function() Settings().colors=nil;NS.SyncEllesmereAspects() end})

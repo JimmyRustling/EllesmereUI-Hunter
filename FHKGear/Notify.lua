@@ -156,7 +156,7 @@ function N.Show(kind, data)
     local name = info and S.Read(C_Item and C_Item.GetItemInfo or _G.GetItemInfo, data.link) or data.link
     local icon = S.Read(C_Item and C_Item.GetItemIconByID or _G.GetItemIcon, info and info.id or data.link)
     local r, g, b = Accent()
-    if data.greed then r, g, b = 1, 0.78, 0.2 end
+    if data.greed then r, g, b = ns.Colour('greed') end -- colour token (review G12)
     card.stripe:SetColorTexture(r, g, b, 1)
     card.title:SetTextColor(r, g, b)
     card.title:SetText(data.title or 'Gear')
@@ -222,7 +222,7 @@ local function StatChanges(info, oldLink)
     for i = 1, math.min(4, #list) do
         local e = list[i]
         local amount = (e.stat == 'DPS') and ('%+.1f'):format(e.diff) or ('%+d'):format(e.diff > 0 and math.floor(e.diff + 0.5) or -math.floor(-e.diff + 0.5))
-        local colour = e.diff > 0 and '|cff40ff59' or '|cffff5a5a'
+        local colour = ns.ColourCode(e.diff > 0 and 'gain' or 'loss')
         out[#out + 1] = colour .. amount .. (e.label:sub(1, 1) == '%' and e.label or (' ' .. e.label)) .. '|r'
     end
     return #out > 0 and table.concat(out, '  ') or nil
@@ -287,9 +287,12 @@ function N.ResetFound() seen, primed = {}, false end
 local function WillAutoEquip(job)
     return ns.Automating('autoEquip') and ns.AutoEquipAllowed(job.info) and ns.Engine.AutomationSafe(job.info)
 end
+local afterCombat = false
 local function ScanFound()
     foundQueued = nil
     if not ns.FoundPopUps() then return end
+    -- Cards cannot show in combat (review GU5): scan once combat ends, so nothing is marked seen unshown.
+    if S.Read(InCombatLockdown) == true then afterCombat = true;ns.Want('PLAYER_REGEN_ENABLED', true);return end
     local jobs = ns.Engine.BagUpgrades()
     for _, job in ipairs(jobs) do
         local key = job.info.link
@@ -304,6 +307,8 @@ local function ScanFound()
     end
     primed = true
 end
+function N.AfterCombat() if afterCombat then afterCombat = false;N.QueueFound() end end
+function N.Waiting() return afterCombat end
 function N.QueueFound()
     if not ns.FoundPopUps() then return end
     if foundQueued and S.Time() - foundQueued < 2 then return end

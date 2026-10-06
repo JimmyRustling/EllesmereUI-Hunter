@@ -2,6 +2,7 @@ local addon, NS = ...
 local EUI, FHK = EllesmereUI, (_G.FHKEllesmereNS or _G.ForeverHunterKeysNS)
 if EUI_CLIENT_BLOCKED or not EUI or not FHK then return end
 local skin, pending, elapsed = nil, true, 0
+local bagQueued = false
 local driver=CreateFrame('Frame')
 local retries=0
 local SyncRetries
@@ -339,7 +340,8 @@ local function RefreshChrome()
     do -- cap options are on the action-bar module, not the Blizzard buttons
         local ns = EUI._ModuleNS and EUI._ModuleNS.EllesmereUIActionBars
         local p = ns and ns.EAB and ns.EAB.db and ns.EAB.db.profile
-        if p and p.bars then
+        -- Writing Ellesmere's end-cap settings is the owner's setup (review R3).
+        if p and p.bars and _G.ForeverHunterKeysNS ~= nil then
             for _, key in ipairs({'MicroBar', 'BagBar'}) do
                 local b = p.bars[key]
                 if b then b.endCapLeft, b.endCapRight, b.foreverBarBg = false, false, false end
@@ -400,5 +402,10 @@ driver:SetScript('OnEvent', function(_, event, name)
         return
     end
     if event == 'PLAYER_LOGIN' then SeedChrome(); SeedFonts(); C_Timer.After(1, RefreshChrome)
+    elseif event == 'BAG_UPDATE_DELAYED' then
+        -- Looting and vendoring fire this in bursts: one refresh per half second (review R15).
+        if bagQueued then return end
+        bagQueued = true
+        C_Timer.After(.5, function() bagQueued = false; RefreshChrome() end)
     else RefreshChrome() end
 end)

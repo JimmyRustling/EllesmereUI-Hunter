@@ -7,14 +7,21 @@ ns.Actions = A
 local generation, queued, transaction = 0, false, nil
 local waiters, failures, rolls = {}, {}, {}
 local budgets={}
-local questGeneration, questOpen = 0, false
+local questGeneration, questOpen, questShift = 0, false, false
 local retryQueued, cursorRetries = false, 0
+-- Slots the player changed by hand (review GC1): auto-equip leaves them until the next level.
+local manual, ownedUntil = {}, 0
+-- Items Gear itself took off (review GC4): live Hunter weights move with the worn item, so two near-equal
+-- items could otherwise swap back and forth.
+local removed = {}
 local function Timer(delay, fn)
     if not S.Call('timer', C_Timer and C_Timer.After, delay, fn) then S.Note('scheduler','Timer unavailable') end
 end
 local function Busy()
     local cursor,targeting=S.Read(CursorHasItem),S.Read(SpellIsTargeting)
-    return not S.OutsideCombat() or not S.Plain(cursor) or cursor~=false or not S.Plain(targeting) or targeting~=false
+    -- Dead, or dragging a spell, macro or money (review GC10): a pickup would drop what the player holds.
+    local dead,held=S.Read(UnitIsDeadOrGhost,'player'),S.Read(GetCursorInfo)
+    return not S.OutsideCombat() or not S.Plain(cursor) or cursor~=false or not S.Plain(targeting) or targeting~=false or dead==true or held~=nil
 end
 local function Key(job) return job.bag .. ':' .. job.slot .. ':' .. job.info.link end
 local function Source(job)
@@ -36,11 +43,15 @@ local function Failed(tx)
     if not tx then return end
     local size=0
     for key,record in pairs(failures) do
-        if record.untilTime<S.Time() then failures[key]=nil else size=size+1 end
+        -- Expired records are kept 10 minutes so a repeat failure still counts (review GC3).
+        if record.untilTime+600<S.Time() then failures[key]=nil else size=size+1 end
     end
     if size>=128 then failures={} end
     local rec=failures[tx.key] or {tries=0}
-    rec.tries,rec.untilTime=rec.tries+1,S.Time()+60
+    -- A declined bind prompt, or a second failure, ends retries for the session (review GC3).
+    rec.tries=rec.tries+(tx.declined and 2 or 1)
+    rec.untilTime=S.Time()+(rec.tries>=2 and 1e9 or 60)
+    if rec.tries>=2 and not rec.told then rec.told=true;ns.Say('Auto-equip skips ' .. tostring(tx.link) .. ' this session. Equip it by hand if you want it.') end
     failures[tx.key]=rec
     ClearOwned(tx);transaction=nil
 end
@@ -49,17 +60,39 @@ function A.Acknowledge(slot)
     if not tx or slot and ns.Engine.FromInventory(slot)~=tx.target then return false end
     if S.Read(GetInventoryItemLink,'player',ns.Engine.Inventory(tx.target))~=tx.link then return false end
     failures[tx.key]=nil;ClearOwned(tx);transaction=nil
+    -- The equip event (and a displaced off hand's) can land after this acknowledgement.
+    ownedUntil=S.Time()+2
+    if S.Text(tx.oldLink) then removed[tx.oldLink]=S.Time()+600 end
     ns.Engine.InvalidateEquipped()
-    ns.Say('Equipped ' .. tx.link .. '.')
-    if ns.Notify then S.Call('pop-up equipped',ns.Notify.Equipped,tx.link,tx.delta,tx.oldLink) end
+    local shown=false
+    if ns.Notify then local _,ok=S.Call('pop-up equipped',ns.Notify.Equipped,tx.link,tx.delta,tx.oldLink);shown=ok==true end
+    ns.SayAction('Equipped ' .. tx.link .. '.',shown)
     -- Continue a checked hand-pair plan only after the first hand is acknowledged.
     if tx.follow then
         local follow=tx.follow
+        follow.planned=true
         Timer(0.3,function() if tx.generation==generation and ns.Automating('autoEquip') then A.Equip(follow) end end)
     end
     return true
 end
+-- A slot change Gear did not make is the player's choice (review GC1): never swap it straight back.
+function A.Changed(slot)
+    if not S.Number(slot) or slot==0 or transaction or S.Time()<ownedUntil then return end
+    local target=ns.Engine.FromInventory(slot)
+    if manual[target] then return end
+    manual[target]=true
+    if ns.Automating('autoEquip') then ns.Say('Auto-equip leaves that slot as you set it until your next level.') end
+end
+function A.ClearManual() manual={} end
+function A.Manual(target) return manual[target]==true end
 function A.Eligible(job)
+    if manual[job.target] or job.info.equipLoc=='INVTYPE_2HWEAPON' and manual[17] then return false end
+    local back=removed[job.info.link]
+    -- Into an empty slot, or the ammo slot (not weight-scored), it may go straight back on.
+    if back and not job.planned and job.target~=0 then
+        if back<=S.Time() then removed[job.info.link]=nil
+        elseif S.Text(S.Read(GetInventoryItemLink,'player',ns.Engine.Inventory(job.target))) then return false end
+    end
     if not Source(job) then return false end
     if job.info.equipLoc=='INVTYPE_2HWEAPON' and S.Text(S.Read(GetInventoryItemLink,'player',17)) then
         local free=0
@@ -85,7 +118,9 @@ function A.Equip(job)
     if job.target==0 and S.Read(CursorHasItem)==true and CursorIs(tx.link) then S.Call('ammo cursor',ClearCursor) end
     if A.Acknowledge() then return true end
     local function Timeout() if transaction==tx then Failed(tx);if ns.Automating('autoEquip') then ns.QueueEquip(0.3) end end end
-    Timer(2,function() if transaction==tx and tx.awaitingBind then Timer(13,Timeout) else Timeout() end end)
+    Timer(2,function()
+        if transaction==tx and tx.awaitingBind then Timer(13,function() if transaction==tx then tx.declined=true end;Timeout() end) else Timeout() end
+    end)
     return true
 end
 local function WakeEvent()
@@ -114,7 +149,16 @@ end
 function A.Wait(key,fn,tries,deadline,requested)
     local ids={}
     for id in pairs(requested or ns.Engine.PendingIDs()) do if ns.Items.PendingIDs()[id] then ids[id]=true end end
-    if not next(ids) then waiters[key],budgets[key]=nil,nil;WakeEvent();return end
+    if not next(ids) then
+        -- No item ID to wait on yet, e.g. a reward link not built (review GC7): retry on a timer, same budget.
+        if requested or tries then waiters[key],budgets[key]=nil,nil;WakeEvent();return end
+        local budget=budgets[key] or {tries=0,deadline=S.Time()+10};budgets[key]=budget
+        budget.tries=budget.tries+1
+        if budget.tries>3 or S.Time()>budget.deadline then waiters[key],budgets[key]=nil,nil;WakeEvent();return end
+        local epoch=generation
+        Timer(1,function() if epoch==generation and budgets[key]==budget then fn() end end)
+        return
+    end
     local size=0;for _ in pairs(waiters) do size=size+1 end
     if not waiters[key] and size>=64 then S.Note('waiters','Item waiter limit reached');return end
     local old=waiters[key]
@@ -128,7 +172,7 @@ end
 function A.Cancel()
     generation=generation+1;queued=false
     ClearOwned(transaction);transaction=nil;waiters={};rolls={};budgets={}
-    questGeneration=questGeneration+1;questOpen=false;cursorRetries=0
+    questGeneration=questGeneration+1;questOpen=false;questShift=false;cursorRetries=0
     WakeEvent()
 end
 function A.Refresh()
@@ -162,7 +206,12 @@ function ns.QueueEquip(delay)
         if not acted then local ammo=ns.Engine.AmmoJob();if ammo then A.Equip(ammo) end end
     end)
 end
-H.PLAYER_REGEN_ENABLED=function() ns.Want('PLAYER_REGEN_ENABLED',false);ns.QueueEquip(0.3) end
+H.PLAYER_REGEN_ENABLED=function()
+    ns.Want('PLAYER_REGEN_ENABLED',false);ns.QueueEquip(0.3)
+    -- Bag work and Upgrade Found scans held during combat (review GU5, GU6).
+    if ns.BagsAfterCombat then ns.BagsAfterCombat() end
+    if ns.Notify and ns.Notify.AfterCombat then ns.Notify.AfterCombat() end
+end
 H.EQUIP_BIND_CONFIRM=function(slot)
     if not S.Number(slot) then return end
     local tx=transaction
@@ -188,6 +237,22 @@ H.GET_ITEM_INFO_RECEIVED=function(id,success)
     for _,job in ipairs(calls) do if job.generation==generation and S.Time()<=job.deadline then job.fn() end end
     WakeEvent()
 end
+-- Shift held as the reward window opens, or while Gear would pick (review G3): the choice is yours.
+-- Rewards are still marked. The flag lasts for this window only.
+local function ShiftDown() local v=S.Read(IsShiftKeyDown);return S.Plain(v) and v==true end
+-- EllesmereUI's Quest Tracker hands in a quest with one reward (or none) itself when its Auto Turn-In
+-- is on: Gear only marks that reward, so the window never gets two hand-ins (suite review SQ-4).
+local function EllesmereTurnsIn()
+    local Q=_G.EllesmereUIQuestTracker
+    if type(Q)~='table' or type(Q.Cfg)~='function' then return false end
+    local okE,enabled=pcall(Q.Cfg,'enabled')
+    if okE and enabled==false then return false end
+    local ok,on=pcall(Q.Cfg,'autoTurnIn')
+    if not ok or on~=true then return false end
+    local n=S.Read(GetNumQuestChoices)
+    return S.Number(n) and n<=1 or false
+end
+A.EllesmereTurnsIn=EllesmereTurnsIn
 local function Quest(token)
     if not questOpen or token~=questGeneration then return end
     local index,how,_,upgrades,vendor=ns.Engine.QuestChoice()
@@ -195,12 +260,23 @@ local function Quest(token)
     if how=='pending' then A.Wait('quest',function() Quest(token) end);return end
     waiters.quest,budgets.quest=nil,nil;WakeEvent()
     if index and ns.Automating('autoQuest') and questOpen and token==questGeneration and S.OutsideCombat() then
+        if questShift or ShiftDown() then questShift=true;return end
+        if EllesmereTurnsIn() then return end
         local link=S.Read(GetQuestItemLink,'choice',index)
-        if S.Call('quest reward',GetQuestReward,index) and ns.Notify and S.Text(link) then S.Call('pop-up quest',ns.Notify.QuestReward,link,how) end
+        if S.Call('quest reward',GetQuestReward,index) and S.Text(link) then
+            local shown=false
+            if ns.Notify then local _,ok=S.Call('pop-up quest',ns.Notify.QuestReward,link,how);shown=ok==true end
+            ns.SayAction('Picked quest reward ' .. link .. (how=='vendor' and ' (best vendor value).' or '.'),shown)
+        end
     end
 end
-H.QUEST_COMPLETE=function() questGeneration=questGeneration+1;questOpen=true;Quest(questGeneration) end
-H.QUEST_FINISHED=function() questGeneration=questGeneration+1;questOpen=false;waiters.quest,budgets.quest=nil,nil;WakeEvent();if ns.ClearQuestMarks then ns.ClearQuestMarks() end end
+A.QuestShift=function() return questShift end
+H.QUEST_COMPLETE=function()
+    questGeneration=questGeneration+1;questOpen=true
+    questShift=ns.Automating('autoQuest') and ShiftDown() or false
+    Quest(questGeneration)
+end
+H.QUEST_FINISHED=function() questGeneration=questGeneration+1;questOpen=false;questShift=false;waiters.quest,budgets.quest=nil,nil;WakeEvent();if ns.ClearQuestMarks then ns.ClearQuestMarks() end end
 local function Roll(id,rec)
     if rolls[id]~=rec or S.Time()>rec.deadline then rolls[id]=nil;waiters['roll:' .. id]=nil;return end
     local choice,why,info,upgrade=ns.Engine.RollChoice(id)
@@ -210,11 +286,16 @@ local function Roll(id,rec)
     end
     if why=='pending' then A.Wait('roll:' .. id,function() Roll(id,rec) end);return end
     waiters['roll:' .. id],budgets['roll:' .. id]=nil,nil;WakeEvent()
-    if choice and ns.Automating('autoRoll') and S.OutsideCombat() then
+    -- RollOnLoot is not protected (review GC5): rolls are answered in combat too.
+    if choice and ns.Automating('autoRoll') then
         rec.choice=choice
         local link=S.Read(GetLootRollItemLink,id)
         if not S.Call('loot roll',RollOnLoot,id,choice) then rolls[id]=nil
-        elseif ns.Notify and S.Text(link) then S.Call('pop-up roll',ns.Notify.Rolled,link,choice) end
+        elseif S.Text(link) then
+            local shown=false
+            if ns.Notify then local _,ok=S.Call('pop-up roll',ns.Notify.Rolled,link,choice);shown=ok==true end
+            ns.SayAction(('Rolled %s on %s (%s).'):format(choice==1 and 'Need' or 'Greed',link,tostring(why or '')),shown)
+        end
     end
 end
 H.START_LOOT_ROLL=function(id,time)

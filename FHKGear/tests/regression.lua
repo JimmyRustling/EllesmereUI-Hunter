@@ -115,6 +115,17 @@ eq(h.getRolled()[302],nil,'Need toggle off leaves an upgrade roll manual')
 ns.Char().rollNeedUpgrades=true;ns.Char().rollGreedOthers=false;ns.Changed();h.setEquipped({[5]='item:3'});E.InvalidateEquipped();h.setRoll('item:4')
 h.Fire('START_LOOT_ROLL',303,60000)
 eq(h.getRolled()[303],nil,'Greed toggle off leaves other loot manual')
+-- GC5: RollOnLoot is not protected, so a roll that starts in combat is answered.
+local lockAPI=InCombatLockdown;InCombatLockdown=function() return true end
+Reset();ns.Char().autoRoll=true;ns.Changed();h.setNeed(true);h.setEquipped({[18]='item:1'});h.setRoll('item:2')
+h.Fire('START_LOOT_ROLL',304,60000)
+eq(h.getRolled()[304],1,'GC5: an upgrade roll is answered in combat')
+InCombatLockdown=lockAPI
+-- GC6: Need follows the auto-equip rarity cap.
+local blueBow=Item(391,'INVTYPE_RANGED',{ITEM_MOD_DAMAGE_PER_SECOND_SHORT=12},{quality=3})
+h.setRoll(blueBow);h.Fire('START_LOOT_ROLL',305,60000)
+eq(h.getRolled()[305],nil,'GC6: an upgrade above the auto-equip rarity cap stays a manual roll')
+eq(select(2,E.RollChoice(305)),'Upgrade outside your auto-equip rules: choose manually','GC6: and says why')
 
 local parsed=ns.Weights.Parse('Mp5=4,Hp5=3,Agility=1e2')
 eq(parsed.Mp5,4,'G15: digit stat key imports');eq(parsed.Hp5,3,'G15: Hp5 imports');eq(parsed.Agility,100,'G15: full exponent imports')
@@ -200,6 +211,21 @@ local agility
 for _,row in ipairs(h.getRows()) do for _,cfg in ipairs(row) do if cfg.type=='input' and cfg.text==(ns.Weights.LABELS.Agility or 'Agility') then agility=cfg end end end
 agility.setValue('1e309')
 eq((ns.Weights.Custom('HUNTER','None','levelling') or {}).Agility,nil,'G43: infinite UI weight is rejected')
+agility.setValue(agility.getValue())
+eq(ns.Weights.Custom('HUNTER','None','levelling'),nil,'GU3: clicking in and out of a weight box saves nothing')
+local pawnScale=ns.Weights.Parse('( Pawn: v1: "Test": Agility=1, AttackPower=0.5, IsPlate=-1000000, IsShield=-1000000 )')
+eq(pawnScale and pawnScale.Agility,1,'GU4: Pawn "unusable" entries are skipped, not a reason to reject the scale')
+eq(ns.Weights.Parse('Agility=1, Stamina=-1'),nil,'GU4: a negative value on a real stat is still rejected')
+eq(ns.Weights.Parse('Crit=14',1)~=nil,true,'GU7: one rating conversion is accepted')
+eq(ns.Weights.Parse('Crit=14'),nil,'GU7: weight scales still need two stats')
+-- GU6: in combat, quiver changes from every shot cost nothing until combat ends.
+local markerFn,markerRuns=ns.RefreshMarkers,0;ns.RefreshMarkers=function() markerRuns=markerRuns+1 end
+local lockFn=InCombatLockdown;InCombatLockdown=function() return true end
+for _=1,5 do h.Fire('BAG_UPDATE_DELAYED') end
+eq(markerRuns,0,'GU6: bag updates in combat do no work')
+InCombatLockdown=lockFn;h.Fire('PLAYER_REGEN_ENABLED')
+eq(markerRuns,1,'GU6: one bag pass runs when combat ends')
+ns.RefreshMarkers=markerFn
 ns.Char().chat=false;local messages=#h.printed();SlashCmdList.FHKGEAR('status')
 eq(#h.printed()>messages,true,'G50: requested diagnostic bypasses notification toggle')
 Reset()
@@ -373,6 +399,44 @@ eq(ns.ParseProcRate('14555, ppm=1, ppm=2'),nil,'proc input rejects duplicate rat
 eq(ns.ParseProcRate('14555, ppm=1, chance=5'),nil,'proc input rejects competing rate models')
 eq(ns.ParseProcRate('14555, ppm=1,, icd=0'),nil,'proc input rejects empty entries')
 eq(ns.ParseProcRate('14555, ppm=1e309'),nil,'proc input rejects infinite rate')
+-- GC3: two failed equips end retries for the session (a declined bind counts as two).
+h.setTime(h.time()+120);Reset();local stuckBow=Item(392,'INVTYPE_RANGED',{ITEM_MOD_DAMAGE_PER_SECOND_SHORT=8})
+h.setEquipped({[18]='item:1'});h.setBags({[0]={stuckBow}})
+local pickupOK=C_Container.PickupContainerItem;local pickTries=0
+C_Container.PickupContainerItem=function() pickTries=pickTries+1 end
+ns.Char().autoEquip=true;ns.Changed();Advance(1);Advance(1)
+eq(pickTries,1,'GC3: a failed equip waits before retrying')
+Advance(61);h.Fire('BAG_UPDATE_DELAYED');Advance(1);Advance(1)
+eq(pickTries,2,'GC3: one retry after a minute')
+Advance(600);h.Fire('BAG_UPDATE_DELAYED');Advance(1);Advance(1)
+eq(pickTries,2,'GC3: after two failures the item is left alone this session')
+C_Container.PickupContainerItem=pickupOK;ns.Char().autoEquip=false;ns.Changed()
+-- GC10: never pick an item up while the player is dragging a spell or is dead.
+Reset();h.setEquipped({[18]='item:1'});h.setBags({[0]={'item:2'}})
+local cursorFn=GetCursorInfo;GetCursorInfo=function() return 'spell',75 end
+ns.Char().autoEquip=true;ns.Changed();Advance(1);Advance(1)
+eq(h.getEquipped()[18],'item:1','GC10: a spell on the cursor blocks auto-equip')
+GetCursorInfo=cursorFn;UnitIsDeadOrGhost=function() return true end;h.Fire('BAG_UPDATE_DELAYED');Advance(1);Advance(1)
+eq(h.getEquipped()[18],'item:1','GC10: and so does being dead')
+UnitIsDeadOrGhost=nil;h.Fire('BAG_UPDATE_DELAYED');Advance(1);Advance(1)
+eq(h.getEquipped()[18],'item:2','GC10: alive with an empty cursor it equips')
+ns.Char().autoEquip=false;ns.Changed()
+-- GC4: an item Gear took off is not put straight back over another item.
+h.setTime(h.time()+120);Reset();h.setEquipped({[18]='item:1'});h.setBags({[0]={'item:2'}})
+ns.Char().autoEquip=true;ns.Changed();Advance(1);Advance(1)
+eq(h.getEquipped()[18],'item:2','GC4 setup: the better bow goes on')
+local weightsFn=ns.Engine.Verdict
+ns.Engine.Verdict=function(info,set) if info and info.link=='item:1' then return 0.5,18,'+0.5' end return weightsFn(info,set) end
+h.Fire('BAG_UPDATE_DELAYED');Advance(1);Advance(1)
+eq(h.getEquipped()[18],'item:2','GC4: the bow Gear removed does not swap back when weights shift')
+ns.Engine.Verdict=weightsFn;ns.Char().autoEquip=false;ns.Changed();h.setTime(h.time()+700)
+-- GC7: a reward link that is not built yet is retried, not dropped.
+Reset();h.setEquipped({[18]='item:1'});h.setChoices({'item:2'})
+local linkFn=GetQuestItemLink;local linkCalls=0
+GetQuestItemLink=function(kind,i) linkCalls=linkCalls+1;if linkCalls<=1 then return nil end;return linkFn(kind,i) end
+ns.Char().autoQuest=true;ns.Changed();h.Fire('QUEST_COMPLETE');Advance(1.1);Advance(1.1)
+eq(h.getReward(),1,'GC7: the reward is chosen once its link arrives')
+GetQuestItemLink=linkFn;h.Fire('QUEST_FINISHED');ns.Char().autoQuest=false;ns.Changed()
 local validProfile=ns.ExportProfile(true,true)
 validProfile.settings.procRates[14555]={ppm='bad'}
 eq(ns.ApplyProfile(validProfile),false,'profile rejects malformed nested proc rate before mutation')
@@ -385,6 +449,8 @@ eq(ns.ApplyProfile(validProfile),false,'profile rejects invalid nested weight va
 validProfile=ns.ExportProfile(true,true);validProfile.settings.spec=nil;ns.Char().spec='Survival'
 eq(ns.ApplyProfile(validProfile),true,'valid profile restores automatic spec selection')
 eq(ns.Char().spec,nil,'profile without a selected spec clears old manual selection')
+validProfile=ns.ExportProfile(true,true);validProfile.settings.source='hunter'
+eq(ns.ApplyProfile(validProfile),true,'profile with the Hunter Model source imports (review GU1)');eq(ns.Char().source,'hunter','Hunter Model source survives the profile round trip');ns.Char().source='auto'
 Reset();h.setEquipped({[18]='item:1'});h.setRoll('item:2');ns.Char().rollNeedUpgrades=false
 eq(select(4,E.RollChoice(7)),true,'upgrade roll mark stays green when Need policy is off')
 Reset();h.missing[2]=true;h.setBags({[0]={'item:2'}});ns.Char().autoEquip=true;ns.Changed();Advance(1)
@@ -398,6 +464,15 @@ h.missing[2]=nil;Reset()
 h.setTime(h.time()+120);Reset();h.setEquipped({[16]='item:15',[18]='item:1'});h.setBags({[0]={'item:2'}})
 ns.Char().autoEquip=true;ns.Changed();Advance(1);Advance(1)
 eq(h.getEquipped()[18],'item:2','N01: a worn chance-on-hit weapon no longer blocks an unrelated bow upgrade')
+h.Fire('PLAYER_EQUIPMENT_CHANGED',18);Advance(1)
+eq(ns.Actions.Manual(18),false,'GC1: the equip event for the swap Gear made is not a manual change')
+Advance(3);h.setEquipped({[16]='item:15',[18]='item:1'});h.setBags({[0]={'item:2'}});h.Fire('PLAYER_EQUIPMENT_CHANGED',18);Advance(1);Advance(1)
+eq(h.getEquipped()[18],'item:1','GC1: a ranged weapon the player swapped back by hand stays on')
+eq(ns.Actions.Manual(18),true,'GC1: that slot is paused')
+h.Fire('PLAYER_EQUIPMENT_CHANGED',0);eq(ns.Actions.Manual(0),false,'GC1: ammo running out never pauses the ammo slot')
+h.setLevel(21);h.Fire('PLAYER_LEVEL_UP',21);Advance(1);Advance(1)
+eq(h.getEquipped()[18],'item:2','GC1: the next level releases the slot and the upgrade goes on')
+ns.Actions.ClearManual()
 Reset();local betterBoots=Item(301,'INVTYPE_FEET',{ITEM_MOD_AGILITY_SHORT=5})
 h.setEquipped({[8]='item:12'});h.setBags({[0]={betterBoots}})
 ns.Char().autoEquip=true;ns.Changed();Advance(1);Advance(1)
@@ -428,6 +503,18 @@ Reset();local prebuildN06=EllesmereUI.IsSearchPrebuild;EllesmereUI.IsSearchPrebu
 h.clearRows();h.spec.modules[1].buildPage('Markers',{},0)
 local labels={};for _,r in ipairs(h.getRows()) do for _,cfg in ipairs(r) do if cfg and cfg.text then labels[cfg.text]=true end end end
 eq(labels['Tooltip Score'],true,'N06: a page indexes its own labels');eq(labels['Levelling Mode'],nil,'N06: and not other pages\' labels')
+-- SC-5: the search index files each label under its real section header; Hunter Model is hunters only.
+local WW=EllesmereUI.Widgets;local heads={};local header=WW.SectionHeader;WW.SectionHeader=function(_,_,text,...) heads[#heads+1]=text;return nil,30 end
+h.clearRows();heads={};h.spec.modules[1].buildPage('Markers',{},0)
+eq(table.concat(heads,','),'MARKERS,APPEARANCE,TEXT COLORS','SC-5: Markers labels sit under their real sections')
+h.clearRows();heads={};h.spec.modules[1].buildPage('Model',{},0)
+local hasHunter=false;for _,t in ipairs(heads) do if t=='HUNTER MODEL' then hasHunter=true end end
+eq(hasHunter,true,'SC-5: a hunter indexes the Hunter Model section')
+local class=UnitClass;UnitClass=function() return 'Mage','MAGE' end
+h.clearRows();heads={};h.spec.modules[1].buildPage('Model',{},0)
+hasHunter=false;for _,t in ipairs(heads) do if t=='HUNTER MODEL' then hasHunter=true end end
+eq(hasHunter,false,'SC-5: other classes never see Hunter Model labels in search')
+UnitClass=class;WW.SectionHeader=header
 EllesmereUI.IsSearchPrebuild=prebuildN06;Reset()
 
 -- v1.0 UI pass (Claude, 2026-10-04): Ellesmere row contract, BoE pair, rarity list, preview, Ellesmere bags.
@@ -497,7 +584,34 @@ EUI_Bags:RefreshInventory();eq(refreshes,1,'V1: the hook keeps Ellesmere refresh
 eq(#timers>0,true,'V1: an Ellesmere bag refresh queues one marker pass')
 ns.Char().markBags=false;ns.Changed()
 eq(eTexture.shown,false,'V1: turning bag icons off hides Ellesmere bag marks')
-EUI_Bags=nil;hooksecurefunc=hookFn;Reset()
+-- GU2: Ellesmere's public overlay hook paints live slots; turning the marks off unregisters it.
+local painter
+EUI_Bags={IsShown=function() return true end,GetChildren=function() return slotParent end,RefreshInventory=function() end,
+    RegisterItemOverlayIcon=function(name,fn) if name=='FHKGear' then painter=fn end end,
+    UnregisterItemOverlayIcon=function(name) if name=='FHKGear' then painter=nil end end}
+ns.Char().markBags=true;ns.Changed();ns.RefreshMarkers();Advance(1)
+eq(type(painter),'function','GU2: Gear registers with the Ellesmere overlay hook')
+local overlay={IsShown=function() return true end};overlay.CreateTexture=eButton.CreateTexture
+local poolButton={_textOverlay=overlay}
+painter(poolButton,{bag=0,slot=1});eq(eTexture.shown,true,'GU2: the overlay marks the upgrade at its live slot')
+painter(poolButton,{bag=0,slot=2});eq(eTexture.shown,false,'GU2: a reused pool button at another slot drops the mark')
+painter(poolButton,{bag=0,slot=0});eq(eTexture.shown,false,'GU2: placeholder slots never mark')
+painter(poolButton,{bag=0,slot=1});ns.RefreshMarkers();Advance(1);eq(eTexture.shown,true,'GU2: a marker pass keeps the overlay mark at its last slot')
+ns.Char().markBags=false;ns.Changed();ns.RefreshMarkers()
+eq(painter,nil,'GU2: bag marks off unregisters the overlay (zero cost while off)')
+eq(eTexture.shown,false,'GU2: and hides the overlay mark')
+-- GU2: a Blizzard pool button reused for another slot is read live, never from the stored slot.
+EUI_Bags=nil;local liveSlot=1;local bTexture
+local bButton={IsShown=function() return true end,GetBagID=function() return 0 end,GetID=function() return liveSlot end}
+function bButton:CreateTexture() local t=eButton.CreateTexture(self);bTexture=t;return t end
+local cFrame={IsShown=function() return true end,EnumerateValidItems=function() local done=false;return function() if not done then done=true;return 1,bButton end end end}
+ContainerFrameUtil_EnumerateContainerFrames=function() return ipairs({cFrame}) end
+ns.Char().markBags=true;ns.Changed();ns.RefreshMarkers();Advance(1)
+eq(bTexture and bTexture.shown,true,'GU2: Blizzard bag buttons are found through the container enumerator')
+liveSlot=2;ns.RefreshMarkers();Advance(1)
+eq(bTexture.shown,false,'GU2: a recycled Blizzard button no longer carries the old slot mark')
+ContainerFrameUtil_EnumerateContainerFrames=nil;ns.Char().markBags=false;ns.Changed()
+hooksecurefunc=hookFn;Reset()
 end
 
 -- Bags (player question 2026-10-04): identical bags fill each empty bag slot once; quiver haste counts once.
@@ -561,7 +675,7 @@ C_Spell={GetSpellInfo=function(key)
         if type(key)=='number' then return names[key] and {name=names[key],spellID=key,castTime=0} or nil end
         local s=spells[key];return s and {name=key,spellID=s.spellID,castTime=s.castTime} or nil end,
     GetSpellDescription=function(id) for _,s in pairs(spells) do if s.spellID==id then return s.text end end end}
-IsPlayerSpell=function(id) return id==19434 or id==3044 end
+IsPlayerSpell=function(id) return id==19434 or id==3044 or id==1515 end
 local function Bow(id,dps,speed,sub)
     return Item(id,'INVTYPE_RANGED',{ITEM_MOD_DAMAGE_PER_SECOND_SHORT=dps},{subclass=sub or 2,speed=('%.2f'):format(speed),low=1,high=2})
 end
@@ -594,6 +708,9 @@ local noPet=ns.Weights.Current().dps.RangedAttackPower
 ns.Char().hunterPet='pet';ns.Changed()
 eq(ns.Weights.Current().dps.RangedAttackPower>noPet,true,'HM: with a pet, ranged AP also feeds 22% to the pet')
 near(detected,ns.Weights.Current().dps.RangedAttackPower,'HM: Detect counts the pet without Lone Wolf, even with no pet out (no swap churn)')
+local knownFn=IsPlayerSpell;IsPlayerSpell=function(id) return id==19434 or id==3044 end;ns.Char().hunterPet='auto';ns.Changed()
+near(ns.Weights.Current().dps.RangedAttackPower,noPet,'GU10: before Tame Beast, Detect counts no pet')
+IsPlayerSpell=knownFn;ns.Char().hunterPet='pet';ns.Changed()
 ns.Char().hunterPet='auto';ns.Char().hunterTalents.loneWolf=1;ns.Changed()
 near(ns.Weights.Current().dps.RangedAttackPower,noPet*1.2,'HM: Lone Wolf with no pet out: no pet share, +20% damage')
 ns.Char().hunterTalents={};ns.Changed()
@@ -669,7 +786,7 @@ local oldSkill,oldSpell,oldKnown=C_SkillInfo,C_Spell,IsPlayerSpell
 C_SkillInfo={GetSkillLineInfoByID=function(id) skillCalls=skillCalls+1;return skillRanks[id] and {rank=skillRanks[id],modifier=0,name=({[45]='Bows',[46]='Guns',[226]='Crossbows'})[id]} or nil end}
 C_Spell={GetSpellInfo=function(key) if key=='Aimed Shot' or key==19434 then return {name='Aimed Shot',spellID=19434,castTime=2000} end end,
     GetSpellDescription=function(id) if id==19434 then return 'An aimed shot that increases ranged damage by 20.' end end}
-IsPlayerSpell=function(id) return id==19434 end
+IsPlayerSpell=function(id) return id==19434 or id==1515 end
 local function Weapon(id,dps,speed,sub) return Item(id,'INVTYPE_RANGED',{ITEM_MOD_DAMAGE_PER_SECOND_SHORT=dps},{subclass=sub,speed=('%.2f'):format(speed),low=1,high=2}) end
 local arrows2=Item(360,'INVTYPE_AMMO',{ITEM_MOD_DAMAGE_PER_SECOND_SHORT=2},{subclass=2});h.ITEMS[360][3]=6
 local bullets=Item(361,'INVTYPE_AMMO',{ITEM_MOD_DAMAGE_PER_SECOND_SHORT=2},{subclass=3});h.ITEMS[361][3]=6
@@ -805,6 +922,14 @@ ns.Char().autoAmmo=false;h.setEquipped({[18]=bowA,[0]=rough});h.setBags({[0]={It
 h.ITEMS[384][3]=6;ns.Changed()
 for _=1,3 do Advance(1) end
 eq(h.getEquipped()[0],rough,'ammo: Auto-Equip Better Ammo off leaves the ammo slot alone')
+-- GC2: a handful of better arrows never replaces a full quiver.
+local counts={[381]=1000,[382]=12};local countAPI=GetItemCount;GetItemCount=function(id) return counts[id] end
+ns.Char().autoAmmo=true;h.setEquipped({[18]=bowA,[0]=rough});h.setBags({[0]={sharp}});ns.Changed()
+for _=1,3 do Advance(1) end
+eq(h.getEquipped()[0],rough,'GC2: 12 better arrows do not replace 1000 worse ones')
+counts[382]=400;h.Fire('BAG_UPDATE_DELAYED');for _=1,3 do Advance(1) end
+eq(h.getEquipped()[0],sharp,'GC2: a real stack of better arrows goes on')
+GetItemCount=countAPI;ns.Char().autoAmmo=false
 ns.Char().autoAmmo=true;ns.Char().autoEquip=false;ns.Changed();Reset()
 end
 

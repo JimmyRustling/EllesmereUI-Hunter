@@ -106,21 +106,37 @@ local function MaxLevel()
     return Number(max) and max or 60
 end
 function NS.EllesmereAutoGearMode()
-    local chosen=FHKEllesmereDB and FHKEllesmereDB.autoGearMode or 'auto'
+    -- Published install (review R2): no intervention unless the player picks a mode. Endgame
+    -- pausing needs imported sim weights, which stock AutoGear cannot hold.
+    local chosen=type(FHKEllesmereDB)=='table' and FHKEllesmereDB.autoGearMode or (_G.ForeverHunterKeysNS~=nil and 'auto' or 'off')
+    if chosen=='off' then return 'off','off' end
     if chosen=='levelling' or chosen=='endgame' then return chosen,chosen end
     local level=Read(UnitLevel,'player')
     return Number(level) and level>=MaxLevel() and 'endgame' or 'levelling','auto'
 end
+-- AutoGear asks every 50 ms: the class:spec lookup walks the talent tabs, so it is cached for
+-- two seconds (review R14); the imported-weights table itself is read fresh every time.
+local specKey,specAt=nil,-10
+local function SpecKey()
+    local now=GetTime and GetTime() or 0
+    if specKey~=nil and now-specAt>=0 and now-specAt<2 then return specKey end
+    local ok,_,class,spec=pcall(_G.AutoGearGetClassAndSpec)
+    specKey=ok and Public(class) and Public(spec) and type(class)=='string' and type(spec)=='string' and class..':'..spec or false
+    specAt=now
+    return specKey
+end
 local function HasImportedWeights()
     local db=_G.AutoGearDB
     if type(db)~='table' or type(db.ImportedWeights)~='table' or type(_G.AutoGearGetClassAndSpec)~='function' then return false end
-    local ok,_,class,spec=pcall(_G.AutoGearGetClassAndSpec)
-    return ok and Public(class) and Public(spec) and type(class)=='string' and type(spec)=='string' and
-        db.ImportedWeights[class..':'..spec]~=nil
+    local key=SpecKey()
+    return key and db.ImportedWeights[key]~=nil or false
 end
 function NS.EllesmereAutoGearPaused()
-    return NS.EllesmereAutoGearMode()=='endgame' and not HasImportedWeights()
+    -- Pausing only makes sense where AutoGear can import sim weights (stock AutoGear cannot).
+    local db=_G.AutoGearDB
+    return NS.EllesmereAutoGearMode()=='endgame' and type(db)=='table' and type(db.ImportedWeights)=='table' and not HasImportedWeights()
 end
+function NS.ResetEllesmereAutoGearPause() specKey=nil end
 local function Hunter()
     local _,class=UnitClass('player')
     return Public(class) and class=='HUNTER'
@@ -144,11 +160,13 @@ end
 NS.SyncEllesmereAutoGearMode=ReapplyWeights
 function NS.SetEllesmereAutoGearMode(mode)
     if type(FHKEllesmereDB)~='table' then FHKEllesmereDB={} end
-    FHKEllesmereDB.autoGearMode=(mode=='levelling' or mode=='endgame') and mode or nil
+    FHKEllesmereDB.autoGearMode=(mode=='off' or mode=='auto' or mode=='levelling' or mode=='endgame') and mode or nil
+    if NS.ResetEllesmereAutoGearPause then NS.ResetEllesmereAutoGearPause() end
     ReapplyWeights()
     if _G.EllesmereUI and _G.EllesmereUI.RefreshPage then _G.EllesmereUI:RefreshPage(true) end
 end
 local function Status()
+    if NS.EllesmereAutoGearMode()=='off' then return 'AutoGear runs as it is' end
     if NS.EllesmereAutoGearPaused() then return 'Paused: import sim weights in AutoGear' end
     if HasImportedWeights() then return 'Using your imported sim weights' end
     return NS.EllesmereAutoGearMode()=='levelling' and 'Levelling weights active' or 'Endgame'
@@ -166,10 +184,10 @@ function NS.AddEllesmereAutoGearOptions(Row)
         return
     end
     if type(_G.AutoGearMain)~='function' then return end
-    Row({type='dropdown',text='AutoGear Mode',values={auto='Automatic',levelling='Levelling',endgame='Endgame'},
-        order={'auto','levelling','endgame'},
-        tooltip='Levelling: the bow counts far more than the melee weapon and slower hard-hitting weapons are favored. Endgame: AutoGear runs only on sim weights you import in AutoGear (/ag), and pauses without them. Automatic: Endgame at max level.',
-        getValue=function() return FHKEllesmereDB and FHKEllesmereDB.autoGearMode or 'auto' end,
+    Row({type='dropdown',text='AutoGear Mode',values={off='Leave AutoGear Alone',auto='Automatic',levelling='Levelling',endgame='Endgame'},
+        order={'off','auto','levelling','endgame'},
+        tooltip='Levelling: the bow counts far more than the melee weapon and slower hard-hitting weapons are favored. Endgame: AutoGear runs only on sim weights you import in AutoGear (/ag), and pauses without them. Automatic: Endgame at max level. Leave AutoGear Alone: no changes to AutoGear.',
+        getValue=function() return select(2,NS.EllesmereAutoGearMode()) end,
         setValue=function(v) NS.SetEllesmereAutoGearMode(v) end},
         {type='label',text=Status()})
 end
@@ -272,7 +290,8 @@ end
 -- point while levelling does not, and fires SKILL_LINES_CHANGED every few swings.
 local skillLines
 local function SkillLineCount()
-    return Read(_G.GetNumSkillLines) or (C_SpellBook and Read(C_SpellBook.GetNumSpellBookSkillLines))
+    -- Forever's skills frame uses C_SkillInfo (API audit 2026-10-06); spellbook tabs are not proficiencies.
+    return C_SkillInfo and Read(C_SkillInfo.GetNumSkillLines) or Read(_G.GetNumSkillLines) or (C_SpellBook and Read(C_SpellBook.GetNumSpellBookSkillLines))
 end
 driver:RegisterEvent('ADDON_LOADED');driver:RegisterEvent('PLAYER_LOGIN')
 driver:SetScript('OnEvent',function(_,event)
