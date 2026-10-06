@@ -4,6 +4,8 @@ Plugins for [EllesmereUI](https://github.com/EllesmereGaming/EllesmereUI) on WoW
 
 **Download:** [`download/ForeverCompanion-1.9.5_FHKGear-0.5.3.zip`](download/ForeverCompanion-1.9.5_FHKGear-0.5.3.zip). **Install:** see [QUICKSTART.md](QUICKSTART.md), about 2 minutes.
 
+**What's new in 1.9.5:** [WHATS_NEW.md](WHATS_NEW.md). **Every option, page by page (545 of them, tagged by class):** [OPTIONS.md](OPTIONS.md).
+
 | Folder | What it does |
 |---|---|
 | `FHKEllesmere` | **Forever Companion**: a page for your class, plus the features below. |
